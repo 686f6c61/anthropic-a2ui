@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+
+# Tests
+.pytest_cache/
+.coverage
+htmlcov/
+
+# uv
+.uv/
+
+# Fire test results (generated, not committed)
+fire_test/results/
+fire_test/results_exhaustive/
+fire_test/results_natural/
+fire_test/viewer.html
+
+# OS
+.DS_Store
