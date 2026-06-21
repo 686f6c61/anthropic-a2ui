@@ -4,6 +4,29 @@ All notable changes to `anthropic-a2ui` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the versioning follows [SemVer](https://semver.org/).
 
+## [0.1.1] - 2026-06-21
+
+### Fixed
+
+- Removed the accidental `pyink` console entry point from the published
+  wheel.
+- Updated structured output helpers and documentation to use Anthropic's
+  `output_config.format` shape.
+- Fixed `repair_orphans` for leaf `root` components so repairs keep a valid
+  `id="root"` component.
+- Made `parse_json_response` return the repaired A2UI payload instead of
+  validating a repaired copy while returning the original.
+- Closed successful `A2uiConversation` tool-use turns with a matching
+  `tool_result` message in sync and async conversations.
+- Switched the default Sonnet model in high-level helpers to
+  `claude-sonnet-4-6`.
+
+### Changed
+
+- Added PyPI project URLs, classifiers, and maintainer metadata.
+- Hardened the PyPI publish workflow with tests, format check, and
+  `twine check` before upload.
+
 ## [0.1.0] - 2026-06-21
 
 ### Added

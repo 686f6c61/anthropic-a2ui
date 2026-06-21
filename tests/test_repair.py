@@ -260,6 +260,35 @@ class TestRepairOrphans:
     assert "a" in new_col["children"]
     assert "orphan" in new_col["children"]
 
+  def test_orphan_en_root_hoja_crea_nuevo_root_valido(self, catalog_v09):
+    """Si root es una hoja, se envuelve sin perder el id root."""
+    payload = [
+        {
+            "version": "v0.9",
+            "createSurface": {"surfaceId": "s", "catalogId": CATALOG_ID},
+        },
+        {
+            "version": "v0.9",
+            "updateComponents": {
+                "surfaceId": "s",
+                "components": [
+                    {"id": "root", "component": "Text", "text": "Principal"},
+                    {"id": "orphan", "component": "Text", "text": "Huerfano"},
+                ],
+            },
+        },
+    ]
+
+    repaired = repair_orphans(payload)
+    components = repaired[1]["updateComponents"]["components"]
+    root = next(c for c in components if c["id"] == "root")
+
+    assert root["component"] == "Column"
+    assert "root-inner" in root["children"]
+    assert "orphan" in root["children"]
+    assert find_orphans(repaired) == []
+    validate_tool_input(catalog_v09, payload, repair=True)
+
   def test_find_orphans_sin_root_devuelve_vacio(self):
     payload = [
         {

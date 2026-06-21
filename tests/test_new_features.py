@@ -1,4 +1,4 @@
-"""Tests de las mejoras nuevas: multi-turno, async, caching, response_format."""
+"""Tests de las mejoras nuevas: multi-turno, async, caching, structured output."""
 
 from __future__ import annotations
 
@@ -10,10 +10,12 @@ from anthropic_a2ui import (
     A2uiConversationAsync,
     ConversationTurn,
     RetryResult,
+    create_a2ui_output_config,
     create_a2ui_response_format,
     generate_a2ui,
     generate_a2ui_async,
     parse_json_response,
+    validate_tool_input,
 )
 
 
@@ -88,6 +90,23 @@ class TestA2uiConversation:
     assert t.success is False
     assert t.error is None
 
+  def test_success_cierra_tool_use_con_tool_result(self, monkeypatch, sample_a2ui_json):
+    import anthropic_a2ui.retry as retry_mod
+
+    def fake_run_attempt(*args, **kwargs):
+      return sample_a2ui_json, "", None, []
+
+    monkeypatch.setattr(retry_mod, "_run_attempt", fake_run_attempt)
+    conv = A2uiConversation(object(), max_retries=0)
+    turn = conv.send("make me a form")
+
+    assert turn.success is True
+    tool_use = conv.messages[-2]["content"][0]
+    tool_result = conv.messages[-1]["content"][0]
+    assert tool_use["type"] == "tool_use"
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["tool_use_id"] == tool_use["id"]
+
 
 class TestA2uiConversationAsync:
   """A2uiConversationAsync: version async de la conversacion."""
@@ -97,6 +116,26 @@ class TestA2uiConversationAsync:
 
   def test_send_es_corutina(self):
     assert inspect.iscoroutinefunction(A2uiConversationAsync.send)
+
+  @pytest.mark.asyncio
+  async def test_success_cierra_tool_use_con_tool_result_async(
+      self, monkeypatch, sample_a2ui_json
+  ):
+    import anthropic_a2ui.retry as retry_mod
+
+    async def fake_run_attempt_async(*args, **kwargs):
+      return sample_a2ui_json, "", None, []
+
+    monkeypatch.setattr(retry_mod, "_run_attempt_async", fake_run_attempt_async)
+    conv = A2uiConversationAsync(object(), max_retries=0)
+    turn = await conv.send("make me a form")
+
+    assert turn.success is True
+    tool_use = conv.messages[-2]["content"][0]
+    tool_result = conv.messages[-1]["content"][0]
+    assert tool_use["type"] == "tool_use"
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["tool_use_id"] == tool_use["id"]
 
 
 class TestCreateA2uiResponseFormat:
@@ -108,25 +147,29 @@ class TestCreateA2uiResponseFormat:
   def test_devuelve_formato_anthropic(self, catalog_v09):
     rf = create_a2ui_response_format(catalog_v09)
     assert rf["type"] == "json_schema"
-    assert "json_schema" in rf
-    assert rf["json_schema"]["name"] == "a2ui_response"
-    assert "schema" in rf["json_schema"]
+    assert "schema" in rf
+    assert "json_schema" not in rf
 
   def test_schema_envuelve_a2ui_json(self, catalog_v09):
     rf = create_a2ui_response_format(catalog_v09)
-    schema = rf["json_schema"]["schema"]
+    schema = rf["schema"]
     assert schema["type"] == "object"
     assert "a2ui_json" in schema["properties"]
     assert schema["properties"]["a2ui_json"]["type"] == "array"
 
   def test_con_poda(self, catalog_v09):
     rf = create_a2ui_response_format(catalog_v09, allowed_components=["Text"])
-    schema = rf["json_schema"]["schema"]
+    schema = rf["schema"]
     assert "a2ui_json" in schema["properties"]
+
+  def test_output_config_envuelve_format(self, catalog_v09):
+    output_config = create_a2ui_output_config(catalog_v09)
+    assert output_config["format"]["type"] == "json_schema"
+    assert "schema" in output_config["format"]
 
 
 class TestParseJsonResponse:
-  """parse_json_response: extrae A2UI de una respuesta response_format."""
+  """parse_json_response: extrae A2UI de una respuesta structured output."""
 
   def test_es_importable(self):
     assert callable(parse_json_response)
@@ -161,6 +204,41 @@ class TestParseJsonResponse:
     result = parse_json_response(msg, catalog_v09)
     assert len(result) == 2
     assert result[1]["updateComponents"]["components"][0]["text"] == "Hola"
+
+  def test_devuelve_payload_reparado(self, catalog_v09):
+    import json
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeTextBlock:
+      text: str
+
+    @dataclass
+    class FakeMessage:
+      content: list
+
+    payload = [
+        {
+            "version": "v0.9",
+            "createSurface": {"surfaceId": "s", "catalogId": catalog_v09.catalog_id},
+        },
+        {
+            "version": "v0.9",
+            "updateComponents": {
+                "surfaceId": "s",
+                "components": [
+                    {"id": "root", "component": "Column", "children": ["icon"]},
+                    {"id": "icon", "component": "Icon", "name": "cloud"},
+                ],
+            },
+        },
+    ]
+    msg = FakeMessage(content=[FakeTextBlock(text=json.dumps({"a2ui_json": payload}))])
+    result = parse_json_response(msg, catalog_v09)
+    icon = result[1]["updateComponents"]["components"][1]
+
+    assert icon["name"] == "info"
+    validate_tool_input(catalog_v09, result, repair=False)
 
   def test_lanza_si_no_hay_texto(self, catalog_v09):
     from dataclasses import dataclass

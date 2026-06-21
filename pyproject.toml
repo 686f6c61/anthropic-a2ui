@@ -9,15 +9,31 @@ description = "Que Claude genere interfaces de usuario con A2UI en sus respuesta
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
+maintainers = [{ name = "686f6c61" }]
 keywords = ["a2ui", "anthropic", "claude", "generative-ui", "agent", "ui"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
 dependencies = [
   "a2ui-agent-sdk>=0.2.4,<0.3",
   "anthropic>=0.40,<1",
   "jsonschema>=4.0",
 ]
 
-[project.scripts]
-pyink = "pyink:patched_main"
+[project.urls]
+Homepage = "https://github.com/686f6c61/anthropic-a2ui"
+Repository = "https://github.com/686f6c61/anthropic-a2ui"
+Issues = "https://github.com/686f6c61/anthropic-a2ui/issues"
+Changelog = "https://github.com/686f6c61/anthropic-a2ui/blob/main/CHANGELOG.md"
 
 [tool.hatch.version]
 path = "src/anthropic_a2ui/version.py"

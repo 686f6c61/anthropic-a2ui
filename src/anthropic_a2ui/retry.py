@@ -159,7 +159,7 @@ def generate_a2ui(
     prompt: str,
     *,
     builder: Optional[ClaudeA2uiPromptBuilder] = None,
-    model: str = "claude-sonnet-4-5",
+    model: str = "claude-sonnet-4-6",
     max_tokens: int = 8192,
     max_retries: int = 2,
     role_description: str = (
@@ -290,7 +290,7 @@ async def generate_a2ui_async(
     prompt: str,
     *,
     builder: Optional[ClaudeA2uiPromptBuilder] = None,
-    model: str = "claude-sonnet-4-5",
+    model: str = "claude-sonnet-4-6",
     max_tokens: int = 8192,
     max_retries: int = 2,
     role_description: str = (
@@ -510,7 +510,7 @@ class A2uiConversation:
       client: anthropic.Anthropic,
       *,
       builder: Optional[ClaudeA2uiPromptBuilder] = None,
-      model: str = "claude-sonnet-4-5",
+      model: str = "claude-sonnet-4-6",
       max_tokens: int = 8192,
       max_retries: int = 2,
       role_description: str = (
@@ -576,15 +576,9 @@ class A2uiConversation:
         turn.success = True
         self.last_a2ui_json = a2ui_payload
         # Anadir respuesta de Claude al historial
-        self.messages.append({
-            "role": "assistant",
-            "content": [{
-                "type": "tool_use",
-                "id": f"toolu_turn_{len(self.turns)}_{attempt}",
-                "name": "send_a2ui_json_to_client",
-                "input": {"a2ui_json": a2ui_payload},
-            }],
-        })
+        tool_use_id = f"toolu_turn_{len(self.turns)}_{attempt}"
+        self.messages.append(_tool_use_message(tool_use_id, a2ui_payload))
+        self.messages.append(_tool_result_message(tool_use_id))
         self.turns.append(turn)
         return turn
 
@@ -660,7 +654,7 @@ class A2uiConversationAsync:
       client: anthropic.AsyncAnthropic,
       *,
       builder: Optional[ClaudeA2uiPromptBuilder] = None,
-      model: str = "claude-sonnet-4-5",
+      model: str = "claude-sonnet-4-6",
       max_tokens: int = 8192,
       max_retries: int = 2,
       role_description: str = (
@@ -716,15 +710,9 @@ class A2uiConversationAsync:
         turn.text = text
         turn.success = True
         self.last_a2ui_json = a2ui_payload
-        self.messages.append({
-            "role": "assistant",
-            "content": [{
-                "type": "tool_use",
-                "id": f"toolu_turn_{len(self.turns)}_{attempt}",
-                "name": "send_a2ui_json_to_client",
-                "input": {"a2ui_json": a2ui_payload},
-            }],
-        })
+        tool_use_id = f"toolu_turn_{len(self.turns)}_{attempt}"
+        self.messages.append(_tool_use_message(tool_use_id, a2ui_payload))
+        self.messages.append(_tool_result_message(tool_use_id))
         self.turns.append(turn)
         return turn
 
@@ -777,7 +765,7 @@ class A2uiConversationAsync:
     self.last_a2ui_json = None
 
 
-# --- Tercer modo: response_format ----------------------------------
+# --- Tercer modo: structured output --------------------------------
 
 
 def create_a2ui_response_format(
@@ -785,11 +773,12 @@ def create_a2ui_response_format(
     *,
     allowed_components: Optional[list[str]] = None,
 ) -> dict[str, Any]:
-  """Crea el ``response_format`` para forzar salida JSON A2UI.
+  """Crea el formato JSON para ``output_config.format`` de Anthropic.
 
-  Anthropic soporta ``response_format`` con ``json_schema`` para garantizar
-  que la respuesta sea JSON parseable sin necesidad de tools ni tags. Este
-  modo es util cuando se quiere UI pura sin texto conversacional.
+  Anthropic soporta structured outputs con ``output_config.format`` y
+  ``type: "json_schema"`` para garantizar que la respuesta sea JSON
+  parseable sin necesidad de tools ni tags. Este modo es util cuando se
+  quiere UI pura sin texto conversacional.
 
   El esquema se envuelve igual que en ``create_a2ui_tool`` (en
   ``{"a2ui_json": [...]}``) para evitar ``oneOf`` en la raiz.
@@ -799,16 +788,16 @@ def create_a2ui_response_format(
     allowed_components: Subconjunto de componentes para podar.
 
   Returns:
-    Dict en el formato de Anthropic:
-    ``{"type": "json_schema", "json_schema": {"name": ..., "schema": {...}}}``.
+    Dict listo para pasarlo como ``output_config={"format": ...}``:
+    ``{"type": "json_schema", "schema": {...}}``.
 
   Example:
     ```python
-    tool = create_a2ui_response_format(builder.get_catalog())
+    output_format = create_a2ui_response_format(builder.get_catalog())
     response = client.messages.create(
-        model="claude-sonnet-4-5",
+        model="claude-sonnet-4-6",
         system=system_prompt,
-        response_format=tool,
+        output_config={"format": output_format},
         messages=[{"role": "user", "content": "hazme un formulario"}],
     )
     # response.content[0].text es un JSON string con {"a2ui_json": [...]}
@@ -820,19 +809,30 @@ def create_a2ui_response_format(
   tool = create_a2ui_tool(catalog, allowed_components=allowed_components)
   return {
       "type": "json_schema",
-      "json_schema": {
-          "name": "a2ui_response",
-          "schema": tool["input_schema"],
-      },
+      "schema": tool["input_schema"],
+  }
+
+
+def create_a2ui_output_config(
+    catalog: Any,
+    *,
+    allowed_components: Optional[list[str]] = None,
+) -> dict[str, Any]:
+  """Crea ``output_config`` completo para structured outputs de Anthropic."""
+  return {
+      "format": create_a2ui_response_format(
+          catalog, allowed_components=allowed_components
+      )
   }
 
 
 def parse_json_response(message: Any, catalog: Any) -> list[dict[str, Any]]:
-  """Extrae y valida el A2UI de una respuesta con ``response_format``.
+  """Extrae y valida el A2UI de una respuesta con structured output.
 
-  Cuando se usa ``response_format``, la respuesta de Claude viene como un
-  ``TextBlock`` cuyo ``text`` es un JSON string con ``{"a2ui_json": [...]}``.
-  Esta funcion lo extrae, desenvuelve y valida.
+  Cuando se usa ``output_config.format``, la respuesta de Claude viene como
+  un ``TextBlock`` cuyo ``text`` es un JSON string con
+  ``{"a2ui_json": [...]}``. Esta funcion lo extrae, desenvuelve, repara y
+  valida.
 
   Args:
     message: El mensaje de respuesta de ``client.messages.create``.
@@ -872,6 +872,51 @@ def parse_json_response(message: Any, catalog: Any) -> list[dict[str, Any]]:
   else:
     raise ValueError("La respuesta no contiene a2ui_json")
 
-  # Validar y reparar
+  payload = _repair_payload(payload)
   validate_tool_input(catalog, payload, repair=True)
   return payload
+
+
+def _tool_use_message(tool_use_id: str, a2ui_payload: list[Any]) -> dict[str, Any]:
+  """Construye el mensaje assistant que representa la tool A2UI usada."""
+  return {
+      "role": "assistant",
+      "content": [{
+          "type": "tool_use",
+          "id": tool_use_id,
+          "name": "send_a2ui_json_to_client",
+          "input": {"a2ui_json": a2ui_payload},
+      }],
+  }
+
+
+def _tool_result_message(tool_use_id: str) -> dict[str, Any]:
+  """Construye el tool_result de exito para cerrar el bucle de Anthropic."""
+  return {
+      "role": "user",
+      "content": [{
+          "type": "tool_result",
+          "tool_use_id": tool_use_id,
+          "content": "A2UI recibido y renderizado por el cliente.",
+      }],
+  }
+
+
+def _repair_payload(payload: Any) -> list[dict[str, Any]]:
+  """Aplica las mismas reparaciones que el parser antes de devolver JSON."""
+  from .repair import (
+      repair_childlists,
+      repair_functions,
+      repair_icons,
+      repair_orphans,
+  )
+
+  if isinstance(payload, list):
+    repaired = payload
+  else:
+    repaired = [payload]
+  repaired = repair_childlists(repaired)
+  repaired = repair_orphans(repaired)
+  repaired = repair_icons(repaired)
+  repaired = repair_functions(repaired)
+  return repaired

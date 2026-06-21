@@ -1,7 +1,7 @@
 """Helpers de transporte para envolver JSON de A2UI en DataParts.
 
 Esta pieza es la menos acoplada a Anthropic: sirve igual si el JSON viene de
-tool use, de tags ``<a2ui-json>`` o de ``response_format``. Produce la
+tool use, de tags ``<a2ui-json>`` o de structured output. Produce la
 envoltura estándar que los renderers de A2UI esperan (MIME
 ``application/a2ui+json``), compatible con A2A.
 

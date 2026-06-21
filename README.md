@@ -208,29 +208,29 @@ r1 = await conv.send("make me a form")
 r2 = await conv.send("add an email field")
 ```
 
-### Mode 3: Forced JSON with `response_format`
+### Mode 3: Forced JSON with structured outputs
 
 Best when you want pure UI output with no conversational text. This mode
-uses Anthropic's `response_format` parameter with `json_schema` to
-guarantee that the response is parseable JSON. No tools, no tags — just a
-structured payload.
+uses Anthropic's `output_config.format` structured output parameter with
+`json_schema` to guarantee that the response is parseable JSON. No tools,
+no tags — just a structured payload.
 
 ```python
 import anthropic
 from anthropic_a2ui import (
     ClaudeA2uiPromptBuilder,
-    create_a2ui_response_format,
+    create_a2ui_output_config,
     parse_json_response,
 )
 
 builder = ClaudeA2uiPromptBuilder()
-response_format = create_a2ui_response_format(builder.get_catalog())
+output_config = create_a2ui_output_config(builder.get_catalog())
 
 client = anthropic.Anthropic()
 response = client.messages.create(
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-4-6",
     system=builder.build(role_description="You create user interfaces."),
-    response_format=response_format,
+    output_config=output_config,
     max_tokens=8192,
     messages=[{"role": "user", "content": "make me a form"}],
 )
@@ -260,7 +260,7 @@ parser = ClaudeStreamParser(catalog=builder.get_catalog())
 
 client = anthropic.Anthropic()
 with client.messages.stream(
-    model="claude-sonnet-4-5",
+    model="claude-sonnet-4-6",
     system=builder.build(role_description="You create user interfaces."),
     tools=[tool],
     max_tokens=8192,
@@ -403,8 +403,10 @@ and modal dialogs.
 - **`A2uiConversation(client, **kwargs)`**: multi-turn conversation.
   `.send(prompt) -> ConversationTurn`, `.reset()`.
 - **`A2uiConversationAsync(client, **kwargs)`**: async version.
-- **`create_a2ui_response_format(catalog) -> dict`**: response_format for
+- **`create_a2ui_output_config(catalog) -> dict`**: `output_config` for
   forced JSON mode. Pair with `parse_json_response(message, catalog)`.
+- **`create_a2ui_response_format(catalog) -> dict`**: low-level
+  `output_config.format` object for forced JSON mode.
 
 ### Building blocks
 

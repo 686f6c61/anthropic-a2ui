@@ -102,10 +102,6 @@ def repair_orphans(
   """
   patched = copy.deepcopy(payload)
 
-  # Mapeo de campos que referencian hijos: children (lista), child (string),
-  # trigger/content (Modal), tabs (lista de {child}).
-  ref_fields = ("children", "child", "trigger", "content")
-
   for msg in patched:
     if "updateComponents" not in msg:
       continue
@@ -163,31 +159,30 @@ def repair_orphans(
       root["child"] = new_col_id
       components.append(new_col)
     else:
-      # Root no es contenedor: envolver en Column
-      original_root_id = root["id"]
-      new_root_id = "repaired-root"
-      new_root = {
-          "id": new_root_id,
+      # Root no es contenedor: renombrarlo y crear un nuevo Column con id root.
+      # El validador exige que siempre exista exactamente un componente "root".
+      inner_root_id = _unique_component_id(comp_map, "root-inner")
+      root["id"] = inner_root_id
+      components.append({
+          "id": "root",
           "component": "Column",
-          "children": [original_root_id] + orphan_list,
-      }
-      # Renombrar el root original
-      root["id"] = original_root_id + "-inner"
-      # Actualizar referencias al root original en otros componentes
-      for c in components:
-        for field in ref_fields:
-          if field in c:
-            if isinstance(c[field], list):
-              c[field] = [
-                  (new_root_id if x == original_root_id else x) for x in c[field]
-              ]
-            elif c[field] == original_root_id:
-              c[field] = new_root_id
-      components.append(new_root)
-      # El nuevo root reemplaza al original en la lista
-      # (se hace efectivo porque tiene id="root" si original lo era)
+          "children": [inner_root_id] + orphan_list,
+      })
 
   return patched
+
+
+def _unique_component_id(
+    comp_map: dict[str, dict[str, Any]],
+    base: str,
+) -> str:
+  """Devuelve un id no usado partiendo de ``base``."""
+  if base not in comp_map:
+    return base
+  idx = 2
+  while f"{base}-{idx}" in comp_map:
+    idx += 1
+  return f"{base}-{idx}"
 
 
 def _collect_refs(
