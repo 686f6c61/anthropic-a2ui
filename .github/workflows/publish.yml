@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
+      contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -23,6 +24,12 @@ jobs:
         run: uv run --python 3.12 --with pytest --with pytest-asyncio python -m pytest tests/ -q
       - name: Check format
         run: uv run --python 3.12 --with pyink python -m pyink --check src/ tests/
+      - name: Lint
+        run: uv run --python 3.12 --with ruff python -m ruff check src/ tests/
+      - name: Type check
+        run: uv run --python 3.12 --with mypy python -m mypy src/anthropic_a2ui
+      - name: Security scan
+        run: uv run --python 3.12 --with bandit python -m bandit -q -r src/
       - name: Build package
         run: uv build
       - name: Check package metadata

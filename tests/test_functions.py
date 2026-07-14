@@ -137,16 +137,6 @@ class TestContextoFunciones:
     """Las funciones de check retornan boolean."""
     from ._function_specs import BASIC_FUNCTION_SPECS
 
-    check_funcs = {
-        "required",
-        "regex",
-        "length",
-        "numeric",
-        "email",
-        "and",
-        "or",
-        "not",
-    }
     for name, ctx, payload in BASIC_FUNCTION_SPECS:
       if ctx == "check":
         raw = json.dumps(payload)
@@ -156,13 +146,6 @@ class TestContextoFunciones:
     """Las funciones de text retornan string."""
     from ._function_specs import BASIC_FUNCTION_SPECS
 
-    text_funcs = {
-        "formatString",
-        "formatNumber",
-        "formatCurrency",
-        "formatDate",
-        "pluralize",
-    }
     for name, ctx, payload in BASIC_FUNCTION_SPECS:
       if ctx == "text":
         raw = json.dumps(payload)
@@ -280,13 +263,11 @@ class TestCoberturaFunciones:
   """Verifica que se cubren TODAS las funciones únicas de A2UI."""
 
   def test_hay_15_funcs_unicas(self):
-    from ._function_specs import all_function_payloads
 
     all_funcs = all_function_payloads()
     assert len(all_funcs) == 15
 
   def test_nombres_son_unicos(self):
-    from ._function_specs import all_function_payloads
 
     names = [name for name, _, _ in all_function_payloads()]
     assert len(names) == len(set(names))
@@ -301,7 +282,6 @@ class TestCoberturaFunciones:
 
   def test_cubre_capitalize_minimal(self, catalog_minimal):
     """capitalize del minimal está en las specs."""
-    from ._function_specs import all_function_payloads
 
     all_names = {name for name, _, _ in all_function_payloads()}
     assert "capitalize" in all_names

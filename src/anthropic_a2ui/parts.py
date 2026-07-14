@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 MIME_A2UI = "application/a2ui+json"
 
@@ -70,9 +70,10 @@ def to_a2ui_part(payload: Any, *, mime: str = MIME_A2UI) -> A2uiPart:
 def to_a2a_datapart(part: A2uiPart) -> Any:
   """Intenta convertir un ``A2uiPart`` a ``a2a.types.DataPart``.
 
-  Esta función es opcional y solo funciona si ``a2a-sdk`` está instalado. Si
-  no lo está, devuelve el dict plano (``part.to_dict()``) para que el caller
-  lo envuelva como prefiera.
+  Esta función es opcional y solo crea un ``DataPart`` cuando la versión
+  instalada de ``a2a-sdk`` todavía expone esa API. De lo contrario devuelve
+  el dict plano (``part.to_dict()``) para que el caller lo envuelva como
+  prefiera.
 
   Returns:
     Un ``DataPart`` de ``a2a`` si está disponible, o un dict con
@@ -80,9 +81,9 @@ def to_a2a_datapart(part: A2uiPart) -> Any:
   """
   try:
     from a2a.types import DataPart  # type: ignore
-  except Exception:
+  except ImportError:
     return part.to_dict()
-  dp = DataPart(**part.to_dict())  # type: ignore[call-arg]
+  dp = DataPart(**part.to_dict())
   return dp
 
 

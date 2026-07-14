@@ -15,6 +15,7 @@ htmlcov/
 
 # uv
 .uv/
+uv.lock
 
 # Fire test results (generated, not committed)
 fire_test/results/

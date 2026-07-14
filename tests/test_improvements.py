@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 
 from anthropic_a2ui import (
-    ClaudeA2uiPromptBuilder,
     ClaudeStreamParser,
     generate_a2ui,
 )
@@ -229,7 +228,6 @@ class TestGenerateA2ui:
   """generate_a2ui es la funcion de alto nivel con reintentos."""
 
   def test_generate_a2ui_es_importable(self):
-    from anthropic_a2ui import generate_a2ui
 
     assert callable(generate_a2ui)
 
@@ -248,7 +246,6 @@ class TestGenerateA2ui:
     """Sin cliente valido, generate_a2ui falla graceful."""
     # No podemos probar sin API key real, pero verificamos la signatura
     import inspect
-    from anthropic_a2ui import generate_a2ui
 
     sig = inspect.signature(generate_a2ui)
     params = list(sig.parameters.keys())

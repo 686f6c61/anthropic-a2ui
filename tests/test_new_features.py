@@ -94,7 +94,10 @@ class TestA2uiConversation:
     import anthropic_a2ui.retry as retry_mod
 
     def fake_run_attempt(*args, **kwargs):
-      return sample_a2ui_json, "", None, []
+      return retry_mod._AttemptResult(
+          a2ui_json=sample_a2ui_json,
+          tool_used=True,
+      )
 
     monkeypatch.setattr(retry_mod, "_run_attempt", fake_run_attempt)
     conv = A2uiConversation(object(), max_retries=0)
@@ -124,7 +127,10 @@ class TestA2uiConversationAsync:
     import anthropic_a2ui.retry as retry_mod
 
     async def fake_run_attempt_async(*args, **kwargs):
-      return sample_a2ui_json, "", None, []
+      return retry_mod._AttemptResult(
+          a2ui_json=sample_a2ui_json,
+          tool_used=True,
+      )
 
     monkeypatch.setattr(retry_mod, "_run_attempt_async", fake_run_attempt_async)
     conv = A2uiConversationAsync(object(), max_retries=0)
@@ -177,7 +183,6 @@ class TestParseJsonResponse:
   def test_extrae_de_text_block(self, catalog_v09):
     import json
     from dataclasses import dataclass
-    from typing import Any
 
     @dataclass
     class FakeTextBlock:

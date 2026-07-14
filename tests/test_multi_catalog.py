@@ -35,7 +35,6 @@ from anthropic_a2ui import (
     ClaudeA2uiPromptBuilder,
     ClaudeStreamParser,
     create_a2ui_tool,
-    to_a2ui_part,
     validate_tool_input,
 )
 
@@ -254,7 +253,6 @@ class TestCatalogoMinimal:
     """El prompt con el minimal debe ser más corto (menos componentes)."""
     from a2ui.schema.catalog import CatalogConfig
     from a2ui.schema.catalog_provider import FileSystemCatalogProvider
-    from a2ui.schema.manager import A2uiSchemaManager
     import os
 
     assets_dir = os.path.join(os.path.dirname(__file__), "assets")

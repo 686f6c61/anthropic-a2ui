@@ -16,7 +16,13 @@ API pública:
 
 from __future__ import annotations
 
-from .parts import A2uiPart, MIME_A2UI, parse_a2ui_part_json, to_a2a_datapart, to_a2ui_part
+from .parts import (
+    A2uiPart,
+    MIME_A2UI,
+    parse_a2ui_part_json,
+    to_a2a_datapart,
+    to_a2ui_part,
+)
 from .prompt_builder import (
     DEFAULT_VERSION,
     SUPPORTED_VERSIONS,
@@ -29,6 +35,7 @@ from .repair import (
     repair_functions,
     repair_icons,
     repair_orphans,
+    repair_payload,
 )
 from .retry import (
     A2uiConversation,
@@ -78,6 +85,7 @@ __all__ = [
     "repair_functions",
     "repair_icons",
     "repair_orphans",
+    "repair_payload",
     "to_a2a_datapart",
     "to_a2ui_part",
     "validate_tool_input",

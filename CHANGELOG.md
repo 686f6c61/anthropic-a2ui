@@ -4,6 +4,35 @@ All notable changes to `anthropic-a2ui` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the versioning follows [SemVer](https://semver.org/).
 
+## [0.1.2] - 2026-07-14
+
+### Fixed
+
+- Made retry feedback reproduce the actual Anthropic tool-use ID and raw tool
+  input, so a validation failure can be corrected by the model instead of
+  silently falling back to prose.
+- Do not retry transport and SDK failures as model-correction prompts.
+- Made `allowed_components` constrain the generated tool and structured-output
+  schemas, not only the prompt. Public A2UI message names now normalize to the
+  schema definitions expected by `a2ui-agent-sdk`.
+- Reject empty A2UI payloads and invalid retry settings early.
+- Ignore non-A2UI tool calls in `ClaudeStreamParser` and cap buffered tool JSON
+  at 2 MB.
+- Made all repair paths use the active catalog, preserving valid custom icons
+  and functions. Repair logs now record only real changes.
+- Made orphan repair safe for multiple surfaces, non-container roots, and
+  pre-existing generated component IDs.
+- Narrowed the optional `a2a-sdk` import fallback to `ImportError` so runtime
+  faults in an installed SDK are not hidden.
+
+### Changed
+
+- Added regression tests for retry tool-result identity, custom catalogs,
+  payload bounds, and ignored tools.
+- Added Ruff, Mypy, and Bandit checks to CI and to the PyPI publication gate.
+- Documented the renderer security boundary and the live-verification limits
+  of structured-output mode.
+
 ## [0.1.1] - 2026-06-21
 
 ### Fixed

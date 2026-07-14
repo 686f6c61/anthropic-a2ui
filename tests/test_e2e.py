@@ -15,7 +15,6 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-import pytest
 
 from anthropic_a2ui import (
     A2uiPart,

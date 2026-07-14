@@ -40,8 +40,6 @@ from ._a2ui_specs import (
     V08_EXTRA_SPECS,
     all_minimal_payloads,
     all_v08_payloads,
-    build_minimal_payload,
-    build_v08_payload,
 )
 
 
@@ -137,7 +135,6 @@ class TestMultipleChoiceV08Estructura:
   """Tests específicos de la estructura de MultipleChoice v0.8."""
 
   def test_multiple_choice_tiene_selections_y_options(self):
-    from ._a2ui_specs import V08_EXTRA_SPECS
 
     name, root, _ = V08_EXTRA_SPECS[0]
     assert name == "MultipleChoice"
@@ -149,7 +146,6 @@ class TestMultipleChoiceV08Estructura:
 
   def test_multiple_choice_usa_wrappers_v08(self):
     """v0.8 usa literalString/literalArray para valores dinámicos."""
-    from ._a2ui_specs import V08_EXTRA_SPECS
 
     _, root, _ = V08_EXTRA_SPECS[0]
     mc = root["component"]["MultipleChoice"]
@@ -239,7 +235,6 @@ class TestCatalogoMinimalEstructura:
     # y que menciona los componentes del minimal
     from a2ui.schema.catalog import CatalogConfig
     from a2ui.schema.catalog_provider import FileSystemCatalogProvider
-    from a2ui.schema.manager import A2uiSchemaManager
     import os
 
     assets_dir = os.path.join(os.path.dirname(__file__), "assets")

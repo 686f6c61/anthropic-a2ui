@@ -15,9 +15,10 @@
 Claude to emit declarative, interactive user interfaces as part of its
 natural responses. Instead of returning plain text, Claude can now build
 forms, dashboards, product cards, surveys, calendars, configuration panels,
-modals, and any other UI composed from the A2UI component catalog — all
-validated, repaired, and ready to render in any A2UI-compatible renderer
-(Lit, React, Angular, Flutter, SwiftUI, and more).
+modals, and any other UI composed from the A2UI component catalog. Payloads
+are repaired when possible and checked against the active catalog before they
+are handed to an A2UI-compatible renderer (Lit, React, Angular, Flutter,
+SwiftUI, and more).
 
 The package does not wrap or replace the Anthropic SDK. It composes with
 it: you use `anthropic` directly and plug in the A2UI pieces where they add
@@ -53,9 +54,10 @@ behind the scenes:
    non-existent catalog functions, orphaned components, ambiguous
    DateTimeInput formats, and dynamic child lists in Row/Column.
 
-5. **Validation**: The repaired payload is validated against the A2UI
-   schema. If it fails, the error is fed back to Claude as a tool result,
-   and Claude corrects itself on the next attempt (up to `max_retries`).
+5. **Validation**: The repaired payload is checked against the A2UI schema
+   and its topology. If a tool call fails that validation, the error is fed
+   back to Claude using the original tool-use ID, and Claude can correct
+   itself on the next attempt (up to `max_retries`).
 
 6. **Delivery**: The validated payload is wrapped in an `A2uiPart` with
    MIME `application/a2ui+json`, ready to be sent to any A2UI renderer.
@@ -74,6 +76,21 @@ pip install anthropic-a2ui
 ```
 
 Requires `ANTHROPIC_API_KEY` in the environment.
+
+---
+
+## Security boundary
+
+An A2UI payload is model output and must be treated as untrusted input. This
+package validates protocol structure and performs narrowly defined repairs;
+it does not sanitize strings, authorize actions, fetch URLs, or make a
+renderer safe.
+
+The application that renders the payload must escape text, reject raw HTML
+and executable expressions, apply URL protocol and host allowlists, constrain
+resource and render sizes, and use an appropriate CSP or sandbox for web
+views. Do not grant actions from an A2UI payload access to credentials or
+privileged server operations without application-side authorization.
 
 ---
 
@@ -97,8 +114,8 @@ result = generate_a2ui(
 )
 
 if result.success:
-    # result.a2ui_json is a validated list of A2UI messages
-    # ready to be rendered by any A2UI-compatible renderer
+    # result.a2ui_json passed structural validation for the active catalog.
+    # Apply your renderer's own content and action security policy.
     render(result.a2ui_json)
     for repair in result.repairs:
         print(f"Repaired: {repair}")
@@ -212,8 +229,10 @@ r2 = await conv.send("add an email field")
 
 Best when you want pure UI output with no conversational text. This mode
 uses Anthropic's `output_config.format` structured output parameter with
-`json_schema` to guarantee that the response is parseable JSON. No tools,
-no tags — just a structured payload.
+`json_schema` to request parseable JSON. No tools and no tags: just a
+structured payload. Validate this mode against the target model and API before
+production use; provider schema-complexity limits can reject a full A2UI
+schema.
 
 ```python
 import anthropic
@@ -269,7 +288,7 @@ with client.messages.stream(
     for event in stream:
         for part in parser.process_event(event):
             if part.a2ui_json:
-                # A complete, validated, repaired A2UI payload
+                # A complete payload checked against the active catalog
                 render(part.a2ui_json)
             if part.text:
                 # Conversational text from Claude
@@ -293,8 +312,8 @@ the caller never sees a false rejection:
 |---|---|---|
 | `patch_catalog_schema` | `DateTimeInput.min/max` uses `oneOf` of three date formats, which `jsonschema` rejects as ambiguous | Changes `oneOf` to `anyOf` in the schema |
 | `repair_orphans` | Components created by Claude but not connected to the `root` tree | Reconnects orphans as children of the root container |
-| `repair_icons` | Icon names that don't exist in the catalog enum (`cloud`, `sunny`, `trash`, ...) | Maps 100+ common aliases to the 59 valid icons; unknown names become `info` |
-| `repair_functions` | `FunctionCall` with functions that don't exist in the catalog (`ternary`, `if`, `switch`) | Replaces with a literal value (`False` for boolean, `""` for string) or removes the check |
+| `repair_icons` | Icon names that don't exist in the active catalog enum (`cloud`, `sunny`, `trash`, ...) | Maps known aliases to a valid catalog icon; otherwise uses `info` when available |
+| `repair_functions` | `FunctionCall` with functions that don't exist in the active catalog (`ternary`, `if`, `switch`) | Replaces with a contextual literal or removes an invalid check without altering valid custom functions |
 | `repair_childlists` | Dynamic child lists (`{componentId, path}`) used in `Row` or `Column`, which only accept static string arrays | Converts to a static array of component IDs |
 
 All repairs are enabled by default in `generate_a2ui`, `A2uiConversation`,
@@ -335,9 +354,9 @@ result = generate_a2ui(client, "make me a form", use_cache=False)
 
 ## Type safety
 
-The package ships with a `py.typed` marker, so IDEs like VS Code (with
-Pylance) and PyCharm provide full autocompletion, type checking, and
-inline documentation for all public APIs.
+The package ships with a `py.typed` marker for typed-editor integrations.
+Its own source is checked with Mypy in CI; downstream applications should
+still type-check their renderer and action adapters.
 
 ---
 
@@ -371,24 +390,12 @@ prompt = builder.build(
 
 ---
 
-## Tested models
+## Model verification
 
-The package has been tested with natural conversational prompts (no
-mention of A2UI, components, or functions) across four Claude models. Each
-model received 10 different prompts and was asked to generate a complete
-A2UI interface:
-
-| Model | Success rate | Avg. time |
-|---|---|---|
-| claude-haiku-4-5 | 10/10 (100%) | ~8s |
-| claude-opus-4-7 | 10/10 (100%) | ~17s |
-| claude-opus-4-8 | 10/10 (100%) | ~15s |
-| claude-sonnet-4-5 | 8/8 (100%) | ~12s |
-
-All 30 test cases (10 prompts x 3 models) passed validation after
-automatic repair. The test prompts cover forms, dashboards, surveys,
-calendars, profiles, configuration panels, task lists, product galleries,
-and modal dialogs.
+The automated suite uses local stream doubles and does not make live Claude
+requests. Model names, structured-output capabilities, and provider schema
+limits evolve, so run a credentialed smoke test with the exact model and
+catalog before relying on a release in production.
 
 ---
 
@@ -419,9 +426,11 @@ and modal dialogs.
   `.process_event(event) -> list[ResponsePart]`. `.parse_stream(stream)`
   is an iterator shortcut.
 - **`validate_tool_input(catalog, input_json, *, repair, strict_integrity)`**:
-  validates a payload against the schema.
+  validates a payload against the schema and returns the repaired payload.
 - **`to_a2ui_part(payload) -> A2uiPart`**: wraps a payload for transport
   with MIME `application/a2ui+json`.
+- **`to_a2a_datapart(part)`**: returns the compatible legacy A2A `DataPart`
+  when that API is installed, otherwise returns the portable dictionary.
 
 ### Repair functions
 
@@ -430,6 +439,8 @@ and modal dialogs.
 - **`repair_functions(payload)`**: fixes non-existent function calls.
 - **`repair_childlists(payload)`**: fixes dynamic child lists in
   Row/Column.
+- **`repair_payload(payload, catalog=...)`**: applies the full repair chain
+  using the active catalog's icons and functions.
 - **`patch_catalog_schema(schema)`**: patches the DateTimeInput schema.
 - **`find_orphans(payload) -> list[str]`**: diagnostic, returns orphan IDs.
 

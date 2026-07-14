@@ -18,12 +18,10 @@ tool use con ``send_a2ui_json_to_client``.
 from __future__ import annotations
 
 import json
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator
 
 from a2ui.parser.response_part import ResponsePart
 from a2ui.parser.streaming import A2uiStreamParser
-
-from .parts import to_a2ui_part
 
 
 class ClaudeStreamParser:
@@ -67,6 +65,8 @@ class ClaudeStreamParser:
       validator: Any = None,
       strict_tool_validation: bool = True,
       repair: bool = True,
+      tool_name: str = "send_a2ui_json_to_client",
+      max_tool_input_chars: int = 2_000_000,
   ) -> None:
     """Inicializa el parser.
 
@@ -80,14 +80,26 @@ class ClaudeStreamParser:
       repair: Si reparar problemas conocidos antes de validar. Aplica
         ``repair_orphans`` (reconecta componentes huerfanos) y parchea el
         schema para ``DateTimeInput.min/max``. Por defecto ``True``.
+      tool_name: Nombre de la tool A2UI que debe procesar. Las demas tools se
+        ignoran para poder compartir el stream con otras herramientas.
+      max_tool_input_chars: Limite defensivo del JSON acumulado por tool use.
     """
+    if max_tool_input_chars <= 0:
+      raise ValueError("max_tool_input_chars debe ser mayor que cero")
     self._a2ui_parser = A2uiStreamParser(catalog=catalog) if catalog else None
     self._validator = validator or (catalog.validator if catalog else None)
     self.strict_tool_validation = strict_tool_validation
     self.repair = repair
     self._catalog = catalog
-    # Buffers de tool use por indice de bloque: index -> {"name": str, "json": str}
+    self.tool_name = tool_name
+    self.max_tool_input_chars = max_tool_input_chars
+    # Buffers por indice: index -> {"name": str, "id": str, "json": str}
     self._tool_buffers: dict[int, dict[str, str]] = {}
+    self.last_tool_use_id: str = ""
+    self.last_tool_used: bool = False
+    self.last_tool_input: Any = None
+    self.last_a2ui_json: Any = None
+    self.last_repairs: list[str] = []
 
   def process_event(self, event: Any) -> list[ResponsePart]:
     """Procesa un evento del stream de Anthropic y devuelve partes completas.
@@ -145,10 +157,19 @@ class ClaudeStreamParser:
     # Si es tool_use, registrar el nombre para emitirlo al cerrar el bloque.
     if getattr(block, "type", None) == "tool_use":
       idx = getattr(event, "index", 0)
+      name = getattr(block, "name", "")
+      if name != self.tool_name:
+        return []
       self._tool_buffers[idx] = {
-          "name": getattr(block, "name", ""),
+          "name": name,
+          "id": getattr(block, "id", ""),
           "json": "",
       }
+      self.last_tool_use_id = self._tool_buffers[idx]["id"]
+      self.last_tool_used = True
+      self.last_tool_input = None
+      self.last_a2ui_json = None
+      self.last_repairs = []
     return []
 
   def _on_block_delta(self, event: Any) -> list[ResponsePart]:
@@ -162,17 +183,18 @@ class ClaudeStreamParser:
         return []
       if self._a2ui_parser is None:
         return [ResponsePart(text=text)]
-      try:
-        return self._a2ui_parser.process_chunk(text)
-      except ValueError:
-        # El parser de A2UI lanza ValueError si un bloque <a2ui-json> tiene
-        # JSON inválido. Lo tragamos para no romper el stream; el texto
-        # residual se pierde, pero el stream sigue.
-        return []
+      return self._a2ui_parser.process_chunk(text)
     if dtype == "input_json_delta":
       idx = getattr(event, "index", 0)
-      buf = self._tool_buffers.setdefault(idx, {"name": "", "json": ""})
+      buf = self._tool_buffers.get(idx)
+      if buf is None:
+        return []
       buf["json"] += getattr(delta, "partial_json", "")
+      if len(buf["json"]) > self.max_tool_input_chars:
+        self._tool_buffers.pop(idx, None)
+        raise ValueError(
+            f"El JSON de tool use supera {self.max_tool_input_chars} caracteres"
+        )
     return []
 
   def _on_block_stop(self, event: Any) -> list[ResponsePart]:
@@ -187,25 +209,28 @@ class ClaudeStreamParser:
       parsed = json.loads(raw)
     except json.JSONDecodeError as exc:
       raise ValueError(f"JSON invalido en tool use {buf['name']!r}: {exc}") from exc
+    self.last_tool_input = parsed
     # Desenvolver a2ui_json si la tool lo envolvio (create_a2ui_tool envuelve
     # el esquema s2c en {"a2ui_json": [...]} para evitar oneOf en la raiz,
     # que Anthropic no soporta).
     if isinstance(parsed, dict) and "a2ui_json" in parsed and len(parsed) == 1:
       parsed = parsed["a2ui_json"]
+    self.last_a2ui_json = parsed
+    if not isinstance(parsed, list):
+      raise ValueError("a2ui_json debe ser una lista de mensajes A2UI")
+    if not parsed:
+      raise ValueError("a2ui_json debe contener al menos un mensaje A2UI")
     # Reparar antes de validar si repair esta activado.
     if self.repair:
-      from .repair import (
-          repair_childlists,
-          repair_functions,
-          repair_icons,
-          repair_orphans,
-      )
+      from .repair import repair_payload
 
       if isinstance(parsed, list):
-        parsed = repair_childlists(parsed)
-        parsed = repair_orphans(parsed)
-        parsed = repair_icons(parsed)
-        parsed = repair_functions(parsed)
+        parsed = repair_payload(
+            parsed,
+            catalog=self._catalog,
+            repair_log=self.last_repairs,
+        )
+        self.last_a2ui_json = parsed
     if self.strict_tool_validation and self._validator is not None:
       if self.repair and self._catalog is not None:
         # Validar con schema parcheado (DateTimeInput oneOf -> anyOf)

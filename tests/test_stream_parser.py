@@ -8,7 +8,7 @@ parser funcione sin depender de tipos concretos.
 
 import json
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 import pytest
 
@@ -136,14 +136,14 @@ class TestClaudeStreamParserModoTags:
         p.text for p in text_parts
     )
 
-  def test_bloque_a2ui_json_invalido_no_rompe(self, catalog_v09):
+  def test_bloque_a2ui_json_invalido_lanza_valueerror(self, catalog_v09):
     parser = ClaudeStreamParser(catalog=catalog_v09)
     # JSON malformado dentro del bloque
     chunks = ["<a2ui-json>", "{invalido", "</a2ui-json>"]
-    # No debe lanzar; puede no emitir a2ui_json o emitir texto residual
-    for ch in chunks:
+    for ch in chunks[:-1]:
       parser.process_event(text_event(ch))
-    # No hay aserción estricta: el parser es tolerante
+    with pytest.raises(ValueError, match="Failed to parse JSON"):
+      parser.process_event(text_event(chunks[-1]))
 
   def test_sin_catalogo_texto_se_emite_directo(self):
     parser = ClaudeStreamParser(catalog=None)
@@ -202,13 +202,11 @@ class TestClaudeStreamParserModoTool:
     assert len(parts) == 1
     assert parts[0].a2ui_json == bad_payload
 
-  def test_varias_tools_en_paralelo_se_separan_por_indice(
-      self, catalog_v09, sample_a2ui_json
-  ):
+  def test_tools_ajenas_se_ignoran(self, catalog_v09, sample_a2ui_json):
     parser = ClaudeStreamParser(catalog=catalog_v09, strict_tool_validation=False)
     raw = json.dumps(sample_a2ui_json)
     parts: list = []
-    # Bloque 0: texto, bloque 1: tool A, bloque 2: tool B
+    # El parser A2UI no debe interpretar argumentos de otras tools.
     parts.extend(parser.process_event(block_start_tool("tool_a", index=1)))
     parts.extend(parser.process_event(block_start_tool("tool_b", index=2)))
     parts.extend(parser.process_event(json_delta_event(raw, index=1)))
@@ -216,7 +214,7 @@ class TestClaudeStreamParserModoTool:
     parts.extend(parser.process_event(block_stop(index=1)))
     parts.extend(parser.process_event(block_stop(index=2)))
     a2ui_parts = [p for p in parts if p.a2ui_json is not None]
-    assert len(a2ui_parts) == 2
+    assert a2ui_parts == []
 
   def test_block_start_text_no_registra_tool(self, catalog_v09):
     parser = ClaudeStreamParser(catalog=catalog_v09)

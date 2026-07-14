@@ -14,9 +14,10 @@ latencia, y reparacion automatica de payloads A2UI.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 import anthropic
+from anthropic.types import MessageParam, TextBlockParam, ToolParam
 
 from .prompt_builder import ClaudeA2uiPromptBuilder
 from .stream_parser import ClaudeStreamParser
@@ -46,11 +47,25 @@ class RetryResult:
   repairs: list[str] = field(default_factory=list)
 
 
+@dataclass
+class _AttemptResult:
+  """Resultado interno de un intento, incluido su contexto de tool use."""
+
+  a2ui_json: Optional[list[dict[str, Any]]] = None
+  text: str = ""
+  error: Optional[str] = None
+  repairs: list[str] = field(default_factory=list)
+  tool_use_id: str = ""
+  tool_input: Any = None
+  tool_used: bool = False
+  retryable: bool = True
+
+
 def _build_system_block(
     system_prompt: str,
     *,
     use_cache: bool = True,
-) -> list[dict[str, Any]]:
+) -> list[TextBlockParam]:
   """Construye el bloque system con cache_control si esta activado.
 
   Anthropic soporta prompt caching anadiendo ``cache_control`` al ultimo
@@ -64,10 +79,10 @@ def _build_system_block(
 
   Returns:
     Lista de bloques para el parametro ``system`` de la API de Anthropic.
-    Con cache: ``[{"type": "text", "text": ..., "cache_control": {"type": "ephemeral"}}]``.
+    Con cache se anade ``cache_control={"type": "ephemeral"}``.
     Sin cache: ``[{"type": "text", "text": ...}]``.
   """
-  block: dict[str, Any] = {"type": "text", "text": system_prompt}
+  block = cast(TextBlockParam, {"type": "text", "text": system_prompt})
   if use_cache:
     block["cache_control"] = {"type": "ephemeral"}
   return [block]
@@ -76,24 +91,22 @@ def _build_system_block(
 def _run_attempt(
     client: anthropic.Anthropic,
     model: str,
-    system_blocks: list[dict[str, Any]],
-    tool: dict[str, Any],
+    system_blocks: list[TextBlockParam],
+    tool: ToolParam,
     max_tokens: int,
-    messages: list[dict[str, Any]],
+    messages: list[MessageParam],
     catalog: Any,
     log_repairs: bool,
-) -> tuple[Optional[list], str, Optional[str], list[str]]:
+) -> _AttemptResult:
   """Ejecuta un intento de generacion.
 
   Returns:
-    Tupla (a2ui_payload, text, error, repairs).
+    ``_AttemptResult`` con payload, error y contexto de la tool.
   """
   parser = ClaudeStreamParser(catalog=catalog, strict_tool_validation=True, repair=True)
 
   a2ui_payload: Optional[list] = None
   text_parts: list[str] = []
-  repairs: list[str] = []
-
   try:
     with client.messages.stream(
         model=model,
@@ -113,45 +126,55 @@ def _run_attempt(
 
       if a2ui_payload is not None:
         try:
-          validate_tool_input(catalog, a2ui_payload, repair=True)
-          # Detectar reparaciones comparando antes/después
-          if log_repairs:
-            repairs = _detect_repairs(a2ui_payload, catalog)
-          return a2ui_payload, text, None, repairs
+          a2ui_payload = validate_tool_input(catalog, a2ui_payload, repair=True)
+          return _AttemptResult(
+              a2ui_json=a2ui_payload,
+              text=text,
+              repairs=list(parser.last_repairs) if log_repairs else [],
+              tool_use_id=parser.last_tool_use_id,
+              tool_input=parser.last_tool_input,
+              tool_used=parser.last_tool_used,
+          )
         except Exception as ve:
-          return a2ui_payload, text, f"{type(ve).__name__}: {str(ve)[:400]}", []
+          return _AttemptResult(
+              a2ui_json=a2ui_payload,
+              text=text,
+              error=_format_error(ve),
+              tool_use_id=parser.last_tool_use_id,
+              tool_input=parser.last_tool_input,
+              tool_used=parser.last_tool_used,
+          )
       else:
-        return (
-            None,
-            text,
-            (
+        return _AttemptResult(
+            text=text,
+            error=(
                 "Claude no genero A2UI. Responde solo con la tool "
                 "send_a2ui_json_to_client cuando el usuario pida una interfaz."
             ),
-            [],
+            tool_use_id=parser.last_tool_use_id,
+            tool_input=parser.last_tool_input,
+            tool_used=parser.last_tool_used,
         )
 
   except Exception as exc:
-    return None, "", f"{type(exc).__name__}: {str(exc)[:400]}", []
+    payload = parser.last_a2ui_json
+    return _AttemptResult(
+        a2ui_json=payload if isinstance(payload, list) else None,
+        text="".join(text_parts),
+        error=_format_error(exc),
+        repairs=list(parser.last_repairs) if log_repairs else [],
+        tool_use_id=parser.last_tool_use_id,
+        tool_input=parser.last_tool_input,
+        tool_used=parser.last_tool_used,
+        # El SDK de Anthropic ya reintenta fallos de transporte. Solo damos
+        # feedback al modelo cuando realmente intento usar la tool A2UI.
+        retryable=parser.last_tool_used,
+    )
 
 
-def _detect_repairs(payload: list[dict[str, Any]], catalog: Any) -> list[str]:
-  """Detecta que reparaciones se aplicaron comparando el payload original.
-
-  Como el parser ya aplica reparaciones, comparamos el payload resultante
-  con lo que el validador estricto rechazaria. Esto es aproximado: solo
-  detecta iconos sustituidos por 'info' y funciones eliminadas.
-  """
-  repairs = []
-  for msg in payload:
-    if "updateComponents" not in msg:
-      continue
-    for comp in msg["updateComponents"].get("components", []):
-      if comp.get("component") == "Icon" and comp.get("name") == "info":
-        repairs.append(f"Icon '{comp['id']}' sustituido por 'info'")
-      if isinstance(comp.get("text"), str) and comp.get("text") == "":
-        repairs.append(f"Text '{comp['id']}' vacio (posible funcion eliminada)")
-  return repairs
+def _format_error(exc: Exception) -> str:
+  """Formatea errores sin incluir respuestas completas potencialmente sensibles."""
+  return f"{type(exc).__name__}: {str(exc)[:400]}"
 
 
 def generate_a2ui(
@@ -159,6 +182,8 @@ def generate_a2ui(
     prompt: str,
     *,
     builder: Optional[ClaudeA2uiPromptBuilder] = None,
+    allowed_components: Optional[list[str]] = None,
+    allowed_messages: Optional[list[str]] = None,
     model: str = "claude-sonnet-4-6",
     max_tokens: int = 8192,
     max_retries: int = 2,
@@ -211,76 +236,57 @@ def generate_a2ui(
         print(f"Fallo: {result.error}")
     ```
   """
+  _validate_generation_options(max_tokens=max_tokens, max_retries=max_retries)
   if builder is None:
     builder = ClaudeA2uiPromptBuilder(version="0.9")
 
-  catalog = builder.get_catalog()
-  tool = create_a2ui_tool(catalog)
+  catalog = builder.get_catalog(
+      allowed_components=allowed_components,
+      allowed_messages=allowed_messages,
+  )
+  tool = cast(ToolParam, create_a2ui_tool(catalog))
   system_prompt = builder.build(
       role_description=role_description,
+      allowed_components=allowed_components,
+      allowed_messages=allowed_messages,
       include_schema=True,
       include_examples=True,
   )
   system_blocks = _build_system_block(system_prompt, use_cache=use_cache)
 
-  messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+  messages: list[MessageParam] = [{"role": "user", "content": prompt}]
   result = RetryResult()
   all_text_parts: list[str] = []
 
   for attempt in range(1, max_retries + 2):
     result.attempts = attempt
-    a2ui_payload, text, error, repairs = _run_attempt(
+    attempt_result = _run_attempt(
         client, model, system_blocks, tool, max_tokens, messages, catalog, log_repairs
     )
-    all_text_parts.append(text)
-    result.repairs.extend(repairs)
+    if attempt_result.text:
+      all_text_parts.append(attempt_result.text)
+    result.repairs.extend(attempt_result.repairs)
 
-    if a2ui_payload is not None:
-      result.all_payloads.append(a2ui_payload)
+    if attempt_result.a2ui_json is not None:
+      result.all_payloads.append(attempt_result.a2ui_json)
 
-    if error is None:
-      result.a2ui_json = a2ui_payload
+    if attempt_result.error is None:
+      result.a2ui_json = attempt_result.a2ui_json
       result.text = "\n".join(all_text_parts)
       result.success = True
       return result
 
     # Preparar feedback para reintentar
-    if attempt > max_retries:
-      result.error = error
+    if attempt > max_retries or not attempt_result.retryable:
+      result.error = attempt_result.error
       result.text = "\n".join(all_text_parts)
       return result
 
-    if a2ui_payload is not None:
-      messages.append({
-          "role": "assistant",
-          "content": [{
-              "type": "tool_use",
-              "id": f"toolu_retry_{attempt}",
-              "name": "send_a2ui_json_to_client",
-              "input": {"a2ui_json": a2ui_payload},
-          }],
-      })
-      messages.append({
-          "role": "user",
-          "content": [{
-              "type": "tool_result",
-              "tool_use_id": f"toolu_retry_{attempt}",
-              "content": (
-                  f"El JSON A2UI no es valido: {error}\n\nCorrige y envia de nuevo."
-              ),
-              "is_error": True,
-          }],
-      })
-    else:
-      messages.append(
-          {"role": "assistant", "content": [{"type": "text", "text": text}]}
-      )
-      messages.append({
-          "role": "user",
-          "content": f"{error} Usa la tool send_a2ui_json_to_client.",
-      })
+    messages.extend(
+        _retry_feedback_messages(attempt_result, fallback_id=f"toolu_retry_{attempt}")
+    )
 
-  result.error = error
+  result.error = attempt_result.error
   result.text = "\n".join(all_text_parts)
   return result
 
@@ -290,6 +296,8 @@ async def generate_a2ui_async(
     prompt: str,
     *,
     builder: Optional[ClaudeA2uiPromptBuilder] = None,
+    allowed_components: Optional[list[str]] = None,
+    allowed_messages: Optional[list[str]] = None,
     model: str = "claude-sonnet-4-6",
     max_tokens: int = 8192,
     max_retries: int = 2,
@@ -319,75 +327,56 @@ async def generate_a2ui_async(
     )
     ```
   """
+  _validate_generation_options(max_tokens=max_tokens, max_retries=max_retries)
   if builder is None:
     builder = ClaudeA2uiPromptBuilder(version="0.9")
 
-  catalog = builder.get_catalog()
-  tool = create_a2ui_tool(catalog)
+  catalog = builder.get_catalog(
+      allowed_components=allowed_components,
+      allowed_messages=allowed_messages,
+  )
+  tool = cast(ToolParam, create_a2ui_tool(catalog))
   system_prompt = builder.build(
       role_description=role_description,
+      allowed_components=allowed_components,
+      allowed_messages=allowed_messages,
       include_schema=True,
       include_examples=True,
   )
   system_blocks = _build_system_block(system_prompt, use_cache=use_cache)
 
-  messages: list[dict[str, Any]] = [{"role": "user", "content": prompt}]
+  messages: list[MessageParam] = [{"role": "user", "content": prompt}]
   result = RetryResult()
   all_text_parts: list[str] = []
 
   for attempt in range(1, max_retries + 2):
     result.attempts = attempt
-    a2ui_payload, text, error, repairs = await _run_attempt_async(
+    attempt_result = await _run_attempt_async(
         client, model, system_blocks, tool, max_tokens, messages, catalog, log_repairs
     )
-    all_text_parts.append(text)
-    result.repairs.extend(repairs)
+    if attempt_result.text:
+      all_text_parts.append(attempt_result.text)
+    result.repairs.extend(attempt_result.repairs)
 
-    if a2ui_payload is not None:
-      result.all_payloads.append(a2ui_payload)
+    if attempt_result.a2ui_json is not None:
+      result.all_payloads.append(attempt_result.a2ui_json)
 
-    if error is None:
-      result.a2ui_json = a2ui_payload
+    if attempt_result.error is None:
+      result.a2ui_json = attempt_result.a2ui_json
       result.text = "\n".join(all_text_parts)
       result.success = True
       return result
 
-    if attempt > max_retries:
-      result.error = error
+    if attempt > max_retries or not attempt_result.retryable:
+      result.error = attempt_result.error
       result.text = "\n".join(all_text_parts)
       return result
 
-    if a2ui_payload is not None:
-      messages.append({
-          "role": "assistant",
-          "content": [{
-              "type": "tool_use",
-              "id": f"toolu_retry_{attempt}",
-              "name": "send_a2ui_json_to_client",
-              "input": {"a2ui_json": a2ui_payload},
-          }],
-      })
-      messages.append({
-          "role": "user",
-          "content": [{
-              "type": "tool_result",
-              "tool_use_id": f"toolu_retry_{attempt}",
-              "content": (
-                  f"El JSON A2UI no es valido: {error}\n\nCorrige y envia de nuevo."
-              ),
-              "is_error": True,
-          }],
-      })
-    else:
-      messages.append(
-          {"role": "assistant", "content": [{"type": "text", "text": text}]}
-      )
-      messages.append({
-          "role": "user",
-          "content": f"{error} Usa la tool send_a2ui_json_to_client.",
-      })
+    messages.extend(
+        _retry_feedback_messages(attempt_result, fallback_id=f"toolu_retry_{attempt}")
+    )
 
-  result.error = error
+  result.error = attempt_result.error
   result.text = "\n".join(all_text_parts)
   return result
 
@@ -395,20 +384,18 @@ async def generate_a2ui_async(
 async def _run_attempt_async(
     client: anthropic.AsyncAnthropic,
     model: str,
-    system_blocks: list[dict[str, Any]],
-    tool: dict[str, Any],
+    system_blocks: list[TextBlockParam],
+    tool: ToolParam,
     max_tokens: int,
-    messages: list[dict[str, Any]],
+    messages: list[MessageParam],
     catalog: Any,
     log_repairs: bool,
-) -> tuple[Optional[list], str, Optional[str], list[str]]:
+) -> _AttemptResult:
   """Version async de ``_run_attempt``."""
   parser = ClaudeStreamParser(catalog=catalog, strict_tool_validation=True, repair=True)
 
   a2ui_payload: Optional[list] = None
   text_parts: list[str] = []
-  repairs: list[str] = []
-
   try:
     async with client.messages.stream(
         model=model,
@@ -428,25 +415,48 @@ async def _run_attempt_async(
 
       if a2ui_payload is not None:
         try:
-          validate_tool_input(catalog, a2ui_payload, repair=True)
-          if log_repairs:
-            repairs = _detect_repairs(a2ui_payload, catalog)
-          return a2ui_payload, text, None, repairs
+          a2ui_payload = validate_tool_input(catalog, a2ui_payload, repair=True)
+          return _AttemptResult(
+              a2ui_json=a2ui_payload,
+              text=text,
+              repairs=list(parser.last_repairs) if log_repairs else [],
+              tool_use_id=parser.last_tool_use_id,
+              tool_input=parser.last_tool_input,
+              tool_used=parser.last_tool_used,
+          )
         except Exception as ve:
-          return a2ui_payload, text, f"{type(ve).__name__}: {str(ve)[:400]}", []
+          return _AttemptResult(
+              a2ui_json=a2ui_payload,
+              text=text,
+              error=_format_error(ve),
+              tool_use_id=parser.last_tool_use_id,
+              tool_input=parser.last_tool_input,
+              tool_used=parser.last_tool_used,
+          )
       else:
-        return (
-            None,
-            text,
-            (
+        return _AttemptResult(
+            text=text,
+            error=(
                 "Claude no genero A2UI. Responde solo con la tool "
                 "send_a2ui_json_to_client cuando el usuario pida una interfaz."
             ),
-            [],
+            tool_use_id=parser.last_tool_use_id,
+            tool_input=parser.last_tool_input,
+            tool_used=parser.last_tool_used,
         )
 
   except Exception as exc:
-    return None, "", f"{type(exc).__name__}: {str(exc)[:400]}", []
+    payload = parser.last_a2ui_json
+    return _AttemptResult(
+        a2ui_json=payload if isinstance(payload, list) else None,
+        text="".join(text_parts),
+        error=_format_error(exc),
+        repairs=list(parser.last_repairs) if log_repairs else [],
+        tool_use_id=parser.last_tool_use_id,
+        tool_input=parser.last_tool_input,
+        tool_used=parser.last_tool_used,
+        retryable=parser.last_tool_used,
+    )
 
 
 # --- Conversacion multi-turno --------------------------------------
@@ -469,6 +479,8 @@ class ConversationTurn:
   text: str = ""
   success: bool = False
   error: Optional[str] = None
+  attempts: int = 0
+  repairs: list[str] = field(default_factory=list)
 
 
 class A2uiConversation:
@@ -510,6 +522,8 @@ class A2uiConversation:
       client: anthropic.Anthropic,
       *,
       builder: Optional[ClaudeA2uiPromptBuilder] = None,
+      allowed_components: Optional[list[str]] = None,
+      allowed_messages: Optional[list[str]] = None,
       model: str = "claude-sonnet-4-6",
       max_tokens: int = 8192,
       max_retries: int = 2,
@@ -523,6 +537,7 @@ class A2uiConversation:
       use_cache: bool = True,
       log_repairs: bool = False,
   ) -> None:
+    _validate_generation_options(max_tokens=max_tokens, max_retries=max_retries)
     self.client = client
     self.model = model
     self.max_tokens = max_tokens
@@ -533,16 +548,21 @@ class A2uiConversation:
     if builder is None:
       builder = ClaudeA2uiPromptBuilder(version="0.9")
     self.builder = builder
-    self.catalog = builder.get_catalog()
-    self.tool = create_a2ui_tool(self.catalog)
+    self.catalog = builder.get_catalog(
+        allowed_components=allowed_components,
+        allowed_messages=allowed_messages,
+    )
+    self.tool = cast(ToolParam, create_a2ui_tool(self.catalog))
     system_prompt = builder.build(
         role_description=role_description,
+        allowed_components=allowed_components,
+        allowed_messages=allowed_messages,
         include_schema=True,
         include_examples=True,
     )
     self.system_blocks = _build_system_block(system_prompt, use_cache=use_cache)
 
-    self.messages: list[dict[str, Any]] = []
+    self.messages: list[MessageParam] = []
     self.turns: list[ConversationTurn] = []
     self.last_a2ui_json: Optional[list[dict[str, Any]]] = None
 
@@ -557,9 +577,11 @@ class A2uiConversation:
     """
     self.messages.append({"role": "user", "content": prompt})
     turn = ConversationTurn(user_prompt=prompt)
+    text_parts: list[str] = []
 
     for attempt in range(1, self.max_retries + 2):
-      a2ui_payload, text, error, repairs = _run_attempt(
+      turn.attempts = attempt
+      attempt_result = _run_attempt(
           self.client,
           self.model,
           self.system_blocks,
@@ -569,58 +591,67 @@ class A2uiConversation:
           self.catalog,
           self.log_repairs,
       )
+      if attempt_result.text:
+        text_parts.append(attempt_result.text)
+      turn.repairs.extend(attempt_result.repairs)
 
-      if error is None and a2ui_payload is not None:
-        turn.a2ui_json = a2ui_payload
-        turn.text = text
+      if attempt_result.error is None and attempt_result.a2ui_json is not None:
+        turn.a2ui_json = attempt_result.a2ui_json
+        turn.text = "\n".join(text_parts)
         turn.success = True
-        self.last_a2ui_json = a2ui_payload
+        self.last_a2ui_json = attempt_result.a2ui_json
         # Anadir respuesta de Claude al historial
-        tool_use_id = f"toolu_turn_{len(self.turns)}_{attempt}"
-        self.messages.append(_tool_use_message(tool_use_id, a2ui_payload))
+        tool_use_id = attempt_result.tool_use_id or (
+            f"toolu_turn_{len(self.turns)}_{attempt}"
+        )
+        self.messages.append(
+            _tool_use_message(
+                tool_use_id,
+                attempt_result.a2ui_json,
+                text=attempt_result.text,
+            )
+        )
         self.messages.append(_tool_result_message(tool_use_id))
         self.turns.append(turn)
         return turn
 
-      if a2ui_payload is not None:
-        self.messages.append({
-            "role": "assistant",
-            "content": [{
-                "type": "tool_use",
-                "id": f"toolu_turn_{len(self.turns)}_{attempt}",
-                "name": "send_a2ui_json_to_client",
-                "input": {"a2ui_json": a2ui_payload},
-            }],
-        })
-        self.messages.append({
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": f"toolu_turn_{len(self.turns)}_{attempt}",
-                "content": (
-                    f"El JSON A2UI no es valido: {error}\n\nCorrige y envia de nuevo."
-                ),
-                "is_error": True,
-            }],
-        })
-      else:
-        self.messages.append({
-            "role": "assistant",
-            "content": [{"type": "text", "text": text}],
-        })
-        self.messages.append({
-            "role": "user",
-            "content": f"{error} Usa la tool send_a2ui_json_to_client.",
-        })
+      has_more_attempts = attempt <= self.max_retries and attempt_result.retryable
+      if has_more_attempts:
+        self.messages.extend(
+            _retry_feedback_messages(
+                attempt_result,
+                fallback_id=f"toolu_turn_{len(self.turns)}_{attempt}",
+            )
+        )
+        continue
 
-      if attempt > self.max_retries:
-        turn.error = error
-        turn.text = text
-        self.turns.append(turn)
-        return turn
+      # Si Claude ya uso la tool, cerrar ese uso incluso cuando no haya otro
+      # intento. Si no, conservar solo su respuesta de texto en el historial.
+      if attempt_result.tool_used:
+        tool_use_id = attempt_result.tool_use_id or (
+            f"toolu_turn_{len(self.turns)}_{attempt}"
+        )
+        self.messages.append(
+            _tool_use_message(
+                tool_use_id,
+                attempt_result.a2ui_json,
+                tool_input=attempt_result.tool_input,
+                text=attempt_result.text,
+            )
+        )
+        self.messages.append(
+            _tool_error_result_message(tool_use_id, attempt_result.error)
+        )
+      elif attempt_result.text:
+        self.messages.append(_assistant_text_message(attempt_result.text))
 
-    turn.error = error
-    turn.text = text
+      turn.error = attempt_result.error
+      turn.text = "\n".join(text_parts)
+      self.turns.append(turn)
+      return turn
+
+    turn.error = "No se ejecuto ningun intento de generacion"
+    turn.text = "\n".join(text_parts)
     self.turns.append(turn)
     return turn
 
@@ -654,6 +685,8 @@ class A2uiConversationAsync:
       client: anthropic.AsyncAnthropic,
       *,
       builder: Optional[ClaudeA2uiPromptBuilder] = None,
+      allowed_components: Optional[list[str]] = None,
+      allowed_messages: Optional[list[str]] = None,
       model: str = "claude-sonnet-4-6",
       max_tokens: int = 8192,
       max_retries: int = 2,
@@ -665,6 +698,7 @@ class A2uiConversationAsync:
       use_cache: bool = True,
       log_repairs: bool = False,
   ) -> None:
+    _validate_generation_options(max_tokens=max_tokens, max_retries=max_retries)
     self.client = client
     self.model = model
     self.max_tokens = max_tokens
@@ -675,16 +709,21 @@ class A2uiConversationAsync:
     if builder is None:
       builder = ClaudeA2uiPromptBuilder(version="0.9")
     self.builder = builder
-    self.catalog = builder.get_catalog()
-    self.tool = create_a2ui_tool(self.catalog)
+    self.catalog = builder.get_catalog(
+        allowed_components=allowed_components,
+        allowed_messages=allowed_messages,
+    )
+    self.tool = cast(ToolParam, create_a2ui_tool(self.catalog))
     system_prompt = builder.build(
         role_description=role_description,
+        allowed_components=allowed_components,
+        allowed_messages=allowed_messages,
         include_schema=True,
         include_examples=True,
     )
     self.system_blocks = _build_system_block(system_prompt, use_cache=use_cache)
 
-    self.messages: list[dict[str, Any]] = []
+    self.messages: list[MessageParam] = []
     self.turns: list[ConversationTurn] = []
     self.last_a2ui_json: Optional[list[dict[str, Any]]] = None
 
@@ -692,9 +731,11 @@ class A2uiConversationAsync:
     """Envia un mensaje y devuelve el turno (async)."""
     self.messages.append({"role": "user", "content": prompt})
     turn = ConversationTurn(user_prompt=prompt)
+    text_parts: list[str] = []
 
     for attempt in range(1, self.max_retries + 2):
-      a2ui_payload, text, error, repairs = await _run_attempt_async(
+      turn.attempts = attempt
+      attempt_result = await _run_attempt_async(
           self.client,
           self.model,
           self.system_blocks,
@@ -704,57 +745,64 @@ class A2uiConversationAsync:
           self.catalog,
           self.log_repairs,
       )
+      if attempt_result.text:
+        text_parts.append(attempt_result.text)
+      turn.repairs.extend(attempt_result.repairs)
 
-      if error is None and a2ui_payload is not None:
-        turn.a2ui_json = a2ui_payload
-        turn.text = text
+      if attempt_result.error is None and attempt_result.a2ui_json is not None:
+        turn.a2ui_json = attempt_result.a2ui_json
+        turn.text = "\n".join(text_parts)
         turn.success = True
-        self.last_a2ui_json = a2ui_payload
-        tool_use_id = f"toolu_turn_{len(self.turns)}_{attempt}"
-        self.messages.append(_tool_use_message(tool_use_id, a2ui_payload))
+        self.last_a2ui_json = attempt_result.a2ui_json
+        tool_use_id = attempt_result.tool_use_id or (
+            f"toolu_turn_{len(self.turns)}_{attempt}"
+        )
+        self.messages.append(
+            _tool_use_message(
+                tool_use_id,
+                attempt_result.a2ui_json,
+                text=attempt_result.text,
+            )
+        )
         self.messages.append(_tool_result_message(tool_use_id))
         self.turns.append(turn)
         return turn
 
-      if a2ui_payload is not None:
-        self.messages.append({
-            "role": "assistant",
-            "content": [{
-                "type": "tool_use",
-                "id": f"toolu_turn_{len(self.turns)}_{attempt}",
-                "name": "send_a2ui_json_to_client",
-                "input": {"a2ui_json": a2ui_payload},
-            }],
-        })
-        self.messages.append({
-            "role": "user",
-            "content": [{
-                "type": "tool_result",
-                "tool_use_id": f"toolu_turn_{len(self.turns)}_{attempt}",
-                "content": (
-                    f"El JSON A2UI no es valido: {error}\n\nCorrige y envia de nuevo."
-                ),
-                "is_error": True,
-            }],
-        })
-      else:
-        self.messages.append({
-            "role": "assistant",
-            "content": [{"type": "text", "text": text}],
-        })
-        self.messages.append({
-            "role": "user",
-            "content": f"{error} Usa la tool send_a2ui_json_to_client.",
-        })
+      has_more_attempts = attempt <= self.max_retries and attempt_result.retryable
+      if has_more_attempts:
+        self.messages.extend(
+            _retry_feedback_messages(
+                attempt_result,
+                fallback_id=f"toolu_turn_{len(self.turns)}_{attempt}",
+            )
+        )
+        continue
 
-      if attempt > self.max_retries:
-        turn.error = error
-        turn.text = text
-        self.turns.append(turn)
-        return turn
+      if attempt_result.tool_used:
+        tool_use_id = attempt_result.tool_use_id or (
+            f"toolu_turn_{len(self.turns)}_{attempt}"
+        )
+        self.messages.append(
+            _tool_use_message(
+                tool_use_id,
+                attempt_result.a2ui_json,
+                tool_input=attempt_result.tool_input,
+                text=attempt_result.text,
+            )
+        )
+        self.messages.append(
+            _tool_error_result_message(tool_use_id, attempt_result.error)
+        )
+      elif attempt_result.text:
+        self.messages.append(_assistant_text_message(attempt_result.text))
 
-    turn.error = error
-    turn.text = text
+      turn.error = attempt_result.error
+      turn.text = "\n".join(text_parts)
+      self.turns.append(turn)
+      return turn
+
+    turn.error = "No se ejecuto ningun intento de generacion"
+    turn.text = "\n".join(text_parts)
     self.turns.append(turn)
     return turn
 
@@ -772,6 +820,7 @@ def create_a2ui_response_format(
     catalog: Any,
     *,
     allowed_components: Optional[list[str]] = None,
+    allowed_messages: Optional[list[str]] = None,
 ) -> dict[str, Any]:
   """Crea el formato JSON para ``output_config.format`` de Anthropic.
 
@@ -806,7 +855,11 @@ def create_a2ui_response_format(
   from .tool import create_a2ui_tool
 
   # Reutilizar la envoltura de create_a2ui_tool
-  tool = create_a2ui_tool(catalog, allowed_components=allowed_components)
+  tool = create_a2ui_tool(
+      catalog,
+      allowed_components=allowed_components,
+      allowed_messages=allowed_messages,
+  )
   return {
       "type": "json_schema",
       "schema": tool["input_schema"],
@@ -817,11 +870,14 @@ def create_a2ui_output_config(
     catalog: Any,
     *,
     allowed_components: Optional[list[str]] = None,
+    allowed_messages: Optional[list[str]] = None,
 ) -> dict[str, Any]:
   """Crea ``output_config`` completo para structured outputs de Anthropic."""
   return {
       "format": create_a2ui_response_format(
-          catalog, allowed_components=allowed_components
+          catalog,
+          allowed_components=allowed_components,
+          allowed_messages=allowed_messages,
       )
   }
 
@@ -865,58 +921,112 @@ def parse_json_response(message: Any, catalog: Any) -> list[dict[str, Any]]:
     raise ValueError(f"La respuesta no es JSON valido: {exc}") from exc
 
   # Desenvolver a2ui_json
-  if isinstance(parsed, dict) and "a2ui_json" in parsed:
+  if isinstance(parsed, dict) and set(parsed) == {"a2ui_json"}:
     payload = parsed["a2ui_json"]
   elif isinstance(parsed, list):
     payload = parsed
   else:
     raise ValueError("La respuesta no contiene a2ui_json")
 
-  payload = _repair_payload(payload)
-  validate_tool_input(catalog, payload, repair=True)
-  return payload
+  return validate_tool_input(catalog, payload, repair=True)
 
 
-def _tool_use_message(tool_use_id: str, a2ui_payload: list[Any]) -> dict[str, Any]:
-  """Construye el mensaje assistant que representa la tool A2UI usada."""
-  return {
-      "role": "assistant",
-      "content": [{
-          "type": "tool_use",
-          "id": tool_use_id,
-          "name": "send_a2ui_json_to_client",
-          "input": {"a2ui_json": a2ui_payload},
-      }],
-  }
+def _validate_generation_options(*, max_tokens: int, max_retries: int) -> None:
+  """Rechaza parametros que no pueden producir una llamada valida."""
+  if isinstance(max_tokens, bool) or not isinstance(max_tokens, int):
+    raise TypeError("max_tokens debe ser un entero")
+  if max_tokens <= 0:
+    raise ValueError("max_tokens debe ser mayor que cero")
+  if isinstance(max_retries, bool) or not isinstance(max_retries, int):
+    raise TypeError("max_retries debe ser un entero")
+  if max_retries < 0:
+    raise ValueError("max_retries no puede ser negativo")
 
 
-def _tool_result_message(tool_use_id: str) -> dict[str, Any]:
-  """Construye el tool_result de exito para cerrar el bucle de Anthropic."""
-  return {
-      "role": "user",
-      "content": [{
-          "type": "tool_result",
-          "tool_use_id": tool_use_id,
-          "content": "A2UI recibido y renderizado por el cliente.",
-      }],
-  }
-
-
-def _repair_payload(payload: Any) -> list[dict[str, Any]]:
-  """Aplica las mismas reparaciones que el parser antes de devolver JSON."""
-  from .repair import (
-      repair_childlists,
-      repair_functions,
-      repair_icons,
-      repair_orphans,
+def _assistant_text_message(text: str) -> MessageParam:
+  return cast(
+      MessageParam,
+      {"role": "assistant", "content": [{"type": "text", "text": text}]},
   )
 
-  if isinstance(payload, list):
-    repaired = payload
-  else:
-    repaired = [payload]
-  repaired = repair_childlists(repaired)
-  repaired = repair_orphans(repaired)
-  repaired = repair_icons(repaired)
-  repaired = repair_functions(repaired)
-  return repaired
+
+def _tool_use_message(
+    tool_use_id: str,
+    a2ui_payload: Optional[list[Any]] = None,
+    *,
+    tool_input: Any = None,
+    text: str = "",
+) -> MessageParam:
+  """Construye el mensaje assistant que representa la tool A2UI usada."""
+  if not isinstance(tool_input, dict):
+    tool_input = {"a2ui_json": a2ui_payload or []}
+  content: list[dict[str, Any]] = []
+  if text:
+    content.append({"type": "text", "text": text})
+  content.append({
+      "type": "tool_use",
+      "id": tool_use_id,
+      "name": "send_a2ui_json_to_client",
+      "input": tool_input,
+  })
+  return cast(MessageParam, {"role": "assistant", "content": content})
+
+
+def _tool_result_message(tool_use_id: str) -> MessageParam:
+  """Construye el tool_result de exito para cerrar el bucle de Anthropic."""
+  return cast(
+      MessageParam,
+      {
+          "role": "user",
+          "content": [{
+              "type": "tool_result",
+              "tool_use_id": tool_use_id,
+              "content": "A2UI recibido y renderizado por el cliente.",
+          }],
+      },
+  )
+
+
+def _tool_error_result_message(tool_use_id: str, error: Optional[str]) -> MessageParam:
+  return cast(
+      MessageParam,
+      {
+          "role": "user",
+          "content": [{
+              "type": "tool_result",
+              "tool_use_id": tool_use_id,
+              "content": f"El JSON A2UI no es valido: {error or 'error desconocido'}",
+              "is_error": True,
+          }],
+      },
+  )
+
+
+def _retry_feedback_messages(
+    attempt: _AttemptResult,
+    *,
+    fallback_id: str,
+) -> list[MessageParam]:
+  """Reconstruye la respuesta del modelo antes de pedirle que se corrija."""
+  if attempt.tool_used:
+    tool_use_id = attempt.tool_use_id or fallback_id
+    return [
+        _tool_use_message(
+            tool_use_id,
+            attempt.a2ui_json,
+            tool_input=attempt.tool_input,
+            text=attempt.text,
+        ),
+        _tool_error_result_message(tool_use_id, attempt.error),
+    ]
+  assistant_text = attempt.text or "No se genero contenido A2UI."
+  return [
+      _assistant_text_message(assistant_text),
+      cast(
+          MessageParam,
+          {
+              "role": "user",
+              "content": f"{attempt.error} Usa la tool send_a2ui_json_to_client.",
+          },
+      ),
+  ]

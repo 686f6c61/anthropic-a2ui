@@ -8,7 +8,6 @@ import json
 import pytest
 
 from anthropic_a2ui import (
-    A2uiPart,
     MIME_A2UI,
     parse_a2ui_part_json,
     to_a2ui_part,

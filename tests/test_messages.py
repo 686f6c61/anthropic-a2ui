@@ -472,7 +472,7 @@ class TestRoundTripFlujos:
 
 
 class TestMensajesV08:
-  """v0.8 usa nombres distintos: beginRendering, surfaceUpdate, dataModelUpdate, deleteSurface."""
+  """v0.8 usa beginRendering, surfaceUpdate, dataModelUpdate y deleteSurface."""
 
   def test_v08_begin_rendering_valida(self, catalog_v08):
     from ._a2ui_specs import CATALOG_ID_V08

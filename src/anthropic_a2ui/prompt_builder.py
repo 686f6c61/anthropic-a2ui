@@ -25,6 +25,66 @@ from a2ui.schema.manager import A2uiSchemaManager
 SUPPORTED_VERSIONS = ("0.8", "0.9", "0.9.1")
 DEFAULT_VERSION = "0.9"
 
+_V09_MESSAGE_NAMES = {
+    "createSurface": "CreateSurfaceMessage",
+    "updateComponents": "UpdateComponentsMessage",
+    "updateDataModel": "UpdateDataModelMessage",
+    "deleteSurface": "DeleteSurfaceMessage",
+}
+
+
+def _normalize_allowed_messages(
+    version: str,
+    allowed_messages: Optional[list[str]],
+) -> Optional[list[str]]:
+  """Normaliza nombres de mensajes a los identificadores usados por el SDK."""
+  if allowed_messages is None:
+    return None
+  if not allowed_messages:
+    raise ValueError("allowed_messages no puede ser una lista vacia")
+  if version == "0.8":
+    valid = {"beginRendering", "surfaceUpdate", "dataModelUpdate", "deleteSurface"}
+    unknown = sorted(set(allowed_messages) - valid)
+    if unknown:
+      raise ValueError(f"Mensajes A2UI no soportados para v0.8: {unknown}")
+    return list(dict.fromkeys(allowed_messages))
+
+  reverse_names = {value: value for value in _V09_MESSAGE_NAMES.values()}
+  normalized = [
+      _V09_MESSAGE_NAMES.get(name, reverse_names.get(name, name))
+      for name in allowed_messages
+  ]
+  valid = set(_V09_MESSAGE_NAMES.values())
+  unknown = sorted(set(normalized) - valid)
+  if unknown:
+    raise ValueError(f"Mensajes A2UI no soportados para v{version}: {unknown}")
+  return list(dict.fromkeys(normalized))
+
+
+def _prune_catalog(
+    catalog: Any,
+    *,
+    allowed_components: Optional[list[str]] = None,
+    allowed_messages: Optional[list[str]] = None,
+) -> Any:
+  """Devuelve un catalogo podado y rechaza restricciones ambiguas."""
+  if allowed_components is not None:
+    if not allowed_components:
+      raise ValueError("allowed_components no puede ser una lista vacia")
+    available = set(catalog.catalog_schema.get("components", {}))
+    unknown = sorted(set(allowed_components) - available)
+    if unknown:
+      raise ValueError(f"Componentes A2UI no disponibles: {unknown}")
+    allowed_components = list(dict.fromkeys(allowed_components))
+
+  normalized_messages = _normalize_allowed_messages(catalog.version, allowed_messages)
+  if allowed_components is None and normalized_messages is None:
+    return catalog
+  return catalog.with_pruning(
+      allowed_components=allowed_components,
+      allowed_messages=normalized_messages,
+  )
+
 
 class ClaudeA2uiPromptBuilder:
   """Construye el system prompt para que Claude genere respuestas A2UI.
@@ -118,19 +178,31 @@ class ClaudeA2uiPromptBuilder:
     Returns:
       Cadena con el system prompt completo.
     """
+    # Validar y normalizar antes de delegar. En A2UI v0.9 el SDK espera
+    # nombres como ``UpdateComponentsMessage``, no ``updateComponents``.
+    self.get_catalog(
+        allowed_components=allowed_components,
+        allowed_messages=allowed_messages,
+    )
+    normalized_messages = _normalize_allowed_messages(self.version, allowed_messages)
     prompt = self.manager.generate_system_prompt(
         role_description=role_description,
         workflow_description=workflow_description,
         ui_description=ui_description,
         client_ui_capabilities=None,
         allowed_components=allowed_components,
-        allowed_messages=allowed_messages,
+        allowed_messages=normalized_messages,
         include_schema=include_schema,
         include_examples=include_examples,
         validate_examples=validate_examples,
     )
     if include_icon_list:
-      icons = _extract_valid_icons(self.get_catalog())
+      icons = _extract_valid_icons(
+          self.get_catalog(
+              allowed_components=allowed_components,
+              allowed_messages=allowed_messages,
+          )
+      )
       if icons:
         prompt += (
             "\n\n--- ICONOS VALIDOS ---\n"
@@ -140,7 +212,12 @@ class ClaudeA2uiPromptBuilder:
             + "\n"
         )
     if include_function_list:
-      functions = _extract_valid_functions(self.get_catalog())
+      functions = _extract_valid_functions(
+          self.get_catalog(
+              allowed_components=allowed_components,
+              allowed_messages=allowed_messages,
+          )
+      )
       if functions:
         prompt += (
             "\n\n--- FUNCIONES VALIDAS ---\n"
@@ -151,13 +228,22 @@ class ClaudeA2uiPromptBuilder:
         )
     return prompt
 
-  def get_catalog(self) -> Any:
-    """Devuelve el ``A2uiCatalog`` seleccionado (con poda aplicada si la hubo).
+  def get_catalog(
+      self,
+      *,
+      allowed_components: Optional[list[str]] = None,
+      allowed_messages: Optional[list[str]] = None,
+  ) -> Any:
+    """Devuelve el ``A2uiCatalog`` seleccionado, opcionalmente podado.
 
     Expuesto para que el caller pueda obtener un validador o podar el
     catálogo de forma independiente al prompt.
     """
-    return self.manager.get_selected_catalog()
+    return _prune_catalog(
+        self.manager.get_selected_catalog(),
+        allowed_components=allowed_components,
+        allowed_messages=allowed_messages,
+    )
 
   def get_validator(self) -> Any:
     """Atajo para obtener el ``A2uiValidator`` del catalogo seleccionado."""

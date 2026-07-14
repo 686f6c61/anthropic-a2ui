@@ -4,7 +4,6 @@ import os
 
 import pytest
 
-from a2ui.basic_catalog.provider import BasicCatalog
 from a2ui.schema.catalog import CatalogConfig
 from a2ui.schema.catalog_provider import FileSystemCatalogProvider
 from a2ui.schema.manager import A2uiSchemaManager

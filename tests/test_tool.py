@@ -32,6 +32,7 @@ class TestCreateA2uiTool:
     assert schema["type"] == "object"
     assert "a2ui_json" in schema["properties"]
     assert schema["properties"]["a2ui_json"]["type"] == "array"
+    assert schema["properties"]["a2ui_json"]["minItems"] == 1
     # El s2c original está dentro de items
     items = schema["properties"]["a2ui_json"]["items"]
     assert items.get("$id", "").endswith("server_to_client.json")
@@ -49,19 +50,26 @@ class TestCreateA2uiTool:
     assert tool["description"] == "Descripción custom."
 
   def test_allowed_components_poda_el_catalogo(self, catalog_v09):
-    # with_pruning reduce el catalog_schema (componentes disponibles) pero
-    # no el s2c_schema (envoltura de mensajes). El input_schema de la tool
-    # es el s2c_schema, así que la poda no cambia la tool; cambia el prompt.
+    # with_pruning reduce el catalog_schema, que es la fuente de las
+    # restricciones de componente que se anaden al esquema de la tool.
     full_cat = catalog_v09
     pruned_cat = full_cat.with_pruning(allowed_components=["Text", "Button"])
     assert set(pruned_cat.catalog_schema["components"].keys()) == {"Text", "Button"}
     assert len(full_cat.catalog_schema["components"]) > 2
 
-  def test_input_schema_no_cambia_con_poda(self, catalog_v09):
-    # La tool usa s2c_schema envuelto en a2ui_json; la poda no cambia s2c.
+  def test_input_schema_restringe_componentes_con_poda(self, catalog_v09):
     tool = create_a2ui_tool(catalog_v09, allowed_components=["Text", "Button"])
     schema = tool["input_schema"]
-    assert "$id" in schema["properties"]["a2ui_json"]["items"]
+    component_items = schema["properties"]["a2ui_json"]["items"]["$defs"][
+        "UpdateComponentsMessage"
+    ]["properties"]["updateComponents"]["properties"]["components"]["items"]
+    constraint = component_items["allOf"][1]
+    assert constraint["properties"]["component"]["enum"] == ["Button", "Text"]
+
+  def test_allowed_messages_acepta_nombres_publicos(self, catalog_v09):
+    tool = create_a2ui_tool(catalog_v09, allowed_messages=["updateComponents"])
+    items = tool["input_schema"]["properties"]["a2ui_json"]["items"]
+    assert items["oneOf"] == [{"$ref": "#/$defs/UpdateComponentsMessage"}]
 
   def test_tool_name_constante_es_send_a2ui_json_to_client(self):
     assert TOOL_NAME == "send_a2ui_json_to_client"
@@ -80,6 +88,10 @@ class TestValidateToolInput:
     bad = [{"version": "v0.9", "createSurface": {"surfaceId": "x"}}]  # falta catalogId
     with pytest.raises(Exception):
       validate_tool_input(catalog_v09, bad)
+
+  def test_payload_vacio_lanza(self, catalog_v09):
+    with pytest.raises(ValueError, match="al menos un mensaje"):
+      validate_tool_input(catalog_v09, [])
 
   def test_strict_integrity_false_es_mas_laxo(self, catalog_v09, sample_a2ui_json):
     # Con strict_integrity=False, se salta comprobaciones de topología
