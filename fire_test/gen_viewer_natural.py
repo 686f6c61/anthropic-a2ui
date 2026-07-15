@@ -11,11 +11,16 @@ summary = json.load(open(results / "summary.json"))
 
 embedded = {}
 for r in summary["results"]:
-    if r.get("has_json"):
-        ms = r["model"].replace("claude-", "").replace("-20251001", "").replace("-20250929", "")
-        p = results / f"{ms}__{r['id']}.json"
-        if p.exists():
-            embedded[f"{ms}__{r['id']}"] = json.load(open(p))
+  if r.get("has_json"):
+    ms = (
+        r["model"]
+        .replace("claude-", "")
+        .replace("-20251001", "")
+        .replace("-20250929", "")
+    )
+    p = results / f"{ms}__{r['id']}.json"
+    if p.exists():
+      embedded[f"{ms}__{r['id']}"] = json.load(open(p))
 
 data_json = json.dumps({"s": summary, "e": embedded}, ensure_ascii=False)
 
@@ -25,6 +30,8 @@ TEMPLATE = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>anthropic-a2ui - Fire test</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200">
 <style>
 :root {
   --bg: #faf9f7;
@@ -179,6 +186,19 @@ main {
   color: var(--muted);
   margin-bottom: 8px;
 }
+.input-mode {
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
 .prompt-text {
   font-size: 14px;
   color: var(--fg);
@@ -274,12 +294,22 @@ window.__DATA__ = __DATA_JSON_PLACEHOLDER__;
 </script>
 
 <script type="module">
-import { MessageProcessor } from 'https://cdn.jsdelivr.net/npm/@a2ui/web_core@0.10.2/v0_9/+esm';
-import { A2uiSurface, basicCatalog } from 'https://cdn.jsdelivr.net/npm/@a2ui/lit@0.10.1/v0_9/+esm';
+import { MessageProcessor } from 'https://cdn.jsdelivr.net/npm/@a2ui/web_core@0.10.3/v0_9/+esm';
+import { ContextProvider } from 'https://cdn.jsdelivr.net/npm/@lit/context@1.1.6/+esm';
+import { renderMarkdown } from 'https://cdn.jsdelivr.net/npm/@a2ui/markdown-it@0.1.0/+esm';
+import { A2uiSurface, basicCatalog, Context } from 'https://cdn.jsdelivr.net/npm/@a2ui/lit@0.10.1/v0_9/+esm';
 
 if (!customElements.get('a2ui-surface')) {
   customElements.define('a2ui-surface', A2uiSurface);
 }
+
+// The official Lit renderer turns Text variants into Markdown internally.
+// Provide its sanitized renderer so heading variants become semantic HTML
+// rather than exposing Markdown markers to the user.
+new ContextProvider(document.body, {
+  context: Context.markdown,
+  initialValue: renderMarkdown,
+});
 
 const D = window.__DATA__;
 let filterModel = 'all';
@@ -338,6 +368,9 @@ function renderCases() {
     const key = ms + '__' + r.id;
     const a2j = e[key];
     const hasJson = a2j != null;
+    const input = r.input || {mode: 'text', content: r.prompt || ''};
+    const inputMode = input.mode === 'voice' ? 'Voz transcrita' : 'Texto escrito';
+    const attemptMeta = r.attempts > 1 ? ' &middot; ' + r.attempts + ' intentos' : '';
 
     let usageHtml = '';
     if (r.usage) {
@@ -354,13 +387,14 @@ function renderCases() {
     div.innerHTML =
       '<div class="case-head">' +
         '<div><h3>' + esc(r.description) + '</h3></div>' +
-        '<div><span class="case-meta">' + esc(ms) + ' &middot; ' + r.elapsed_ms + 'ms</span> ' +
+        '<div><span class="case-meta">' + esc(ms) + ' &middot; ' + r.elapsed_ms + 'ms' + attemptMeta + '</span> ' +
         '<span class="badge ' + r.status + '">' + r.status.toUpperCase() + '</span></div>' +
       '</div>' +
       '<div class="case-body">' +
         '<div class="prompt-section">' +
-          '<div class="prompt-label">User prompt</div>' +
-          '<div class="prompt-text">' + esc(r.prompt) + '</div>' +
+          '<div class="prompt-label">Entrada enviada a Claude' +
+            '<span class="input-mode">' + esc(inputMode) + '</span></div>' +
+          '<div class="prompt-text">' + esc(input.content) + '</div>' +
         '</div>' +
         usageHtml +
         (r.error ? '<div class="error-section"><div class="error-text">' + esc(r.error) + '</div></div>' : '') +
@@ -412,7 +446,7 @@ renderCases();
 
 html = TEMPLATE.replace("__DATA_JSON_PLACEHOLDER__", data_json)
 with open(output, "w", encoding="utf-8") as f:
-    f.write(html)
+  f.write(html)
 
 print(f"Viewer: file://{output}")
 print(f"Size: {output.stat().st_size // 1024} KB")

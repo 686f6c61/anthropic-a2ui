@@ -1,3 +1,3 @@
 """Versión del paquete anthropic-a2ui."""
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"

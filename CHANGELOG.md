@@ -4,6 +4,35 @@ All notable changes to `anthropic-a2ui` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the versioning follows [SemVer](https://semver.org/).
 
+## [0.1.4] - 2026-07-15
+
+### Added
+
+- Added an optional `payload_validator` to synchronous and asynchronous
+  generation and conversation APIs. Applications can now enforce their own
+  content, media, and URL policies after A2UI schema validation; rejected
+  payloads are returned to Claude as retry feedback.
+
+### Fixed
+
+- Strict validation now rejects a newly created surface that has no `root`
+  component in the same complete response, preventing blank but schema-valid
+  interfaces from being reported as successful.
+- Repaired visible Markdown markers in generated labels, text, descriptions,
+  tabs, options, accessibility content, and validation messages so renderers
+  receive presentation-ready plain text.
+- Added presentation guidance that keeps empty forms neutral until interaction
+  instead of showing validation failures on first render.
+
+### Changed
+
+- Improved the natural-language fire-test renderer to show the exact text or
+  voice transcript sent to Claude, use the official A2UI Markdown service for
+  text variants, and reject video sources that Chromium cannot render.
+- Verified 30 natural prompts against Haiku 4.5, Opus 4.7, and Opus 4.8 with
+  complete, validated A2UI payloads. A rejected video source is retried rather
+  than counted as a successful visual result.
+
 ## [0.1.3] - 2026-07-15
 
 ### Fixed

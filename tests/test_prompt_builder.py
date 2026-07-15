@@ -57,6 +57,14 @@ class TestClaudeA2uiPromptBuilder:
     # Los ejemplos few-shot vienen como bloques <a2ui-json>
     assert "<a2ui-json>" in prompt
 
+  def test_build_incluye_reglas_de_presentacion_sin_markdown(self, builder_v09):
+    prompt = builder_v09.build(role_description="x", include_schema=False)
+    assert "No uses sintaxis Markdown" in prompt
+    assert "Text.variant" in prompt
+    assert "formularios inicialmente vacios" in prompt
+    assert "URL HTTPS publica y directa" in prompt
+    assert "Google Storage/Google GTV" in prompt
+
   def test_version_por_defecto_es_09(self):
     builder = ClaudeA2uiPromptBuilder()
     assert builder.version == DEFAULT_VERSION

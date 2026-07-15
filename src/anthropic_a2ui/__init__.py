@@ -34,6 +34,7 @@ from .repair import (
     repair_childlists,
     repair_functions,
     repair_icons,
+    repair_markdown_text,
     repair_orphans,
     repair_payload,
 )
@@ -84,6 +85,7 @@ __all__ = [
     "repair_childlists",
     "repair_functions",
     "repair_icons",
+    "repair_markdown_text",
     "repair_orphans",
     "repair_payload",
     "to_a2a_datapart",

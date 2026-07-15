@@ -192,6 +192,23 @@ class TestClaudeStreamParserModoTool:
     with pytest.raises(Exception):
       parser.process_event(block_stop(index=1))
 
+  def test_tool_use_stricto_falla_si_surface_no_es_renderizable(self, catalog_v09):
+    payload = [
+        {
+            "version": "v0.9",
+            "createSurface": {
+                "surfaceId": "incompleta",
+                "catalogId": catalog_v09.catalog_id,
+            },
+        },
+    ]
+    parser = ClaudeStreamParser(catalog=catalog_v09, strict_tool_validation=True)
+    parser.process_event(block_start_tool("send_a2ui_json_to_client", index=1))
+    parser.process_event(json_delta_event(json.dumps(payload), index=1))
+
+    with pytest.raises(ValueError, match="renderizable"):
+      parser.process_event(block_stop(index=1))
+
   def test_tool_use_sin_strict_no_valida(self, catalog_v09):
     # Mismo payload inválido, pero con strict=False: no lanza
     bad_payload = [{"version": "v0.9", "createSurface": {"surfaceId": "x"}}]

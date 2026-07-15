@@ -19,6 +19,7 @@ import pytest
 from anthropic_a2ui import (
     find_orphans,
     patch_catalog_schema,
+    repair_markdown_text,
     repair_orphans,
     validate_tool_input,
 )
@@ -368,6 +369,95 @@ class TestRepairOrphans:
 
 
 # --- Tests de integración: validate_tool_input con repair ----------
+
+
+class TestRepairMarkdownText:
+  """El texto visible no debe depender de un renderer Markdown."""
+
+  def test_elimina_markdown_de_campos_de_presentacion(self):
+    payload = [{
+        "version": "v0.9",
+        "updateComponents": {
+            "surfaceId": "s",
+            "components": [
+                {
+                    "id": "title",
+                    "component": "Text",
+                    "text": "## **Configuracion** de la cuenta",
+                },
+                {
+                    "id": "language",
+                    "component": "ChoicePicker",
+                    "label": "*Idioma*",
+                    "options": [
+                        {"label": "[Espanol](https://example.com)", "value": "es"}
+                    ],
+                },
+                {
+                    "id": "tabs",
+                    "component": "Tabs",
+                    "tabs": [{"title": "`Preferencias`", "child": "title"}],
+                },
+            ],
+        },
+    }]
+    repairs: list[str] = []
+
+    repaired = repair_markdown_text(payload, repair_log=repairs)
+    components = repaired[0]["updateComponents"]["components"]
+
+    assert components[0]["text"] == "Configuracion de la cuenta"
+    assert components[1]["label"] == "Idioma"
+    assert components[1]["options"][0]["label"] == "Espanol"
+    assert components[2]["tabs"][0]["title"] == "Preferencias"
+    assert len(repairs) == 4
+    assert payload[0]["updateComponents"]["components"][0]["text"].startswith("##")
+
+  def test_conserva_rutas_urls_y_texto_no_markdown(self):
+    payload = [{
+        "version": "v0.9",
+        "updateComponents": {
+            "surfaceId": "s",
+            "components": [
+                {"id": "text", "component": "Text", "text": "C# developer"},
+                {
+                    "id": "image",
+                    "component": "Image",
+                    "url": "https://example.com/image#hero.png",
+                    "description": "Imagen principal",
+                },
+            ],
+        },
+    }]
+
+    assert repair_markdown_text(payload) == payload
+
+  def test_validate_con_repair_aplica_limpieza_de_markdown(self, catalog_v09):
+    """El flujo publico aplica la limpieza antes de devolver el payload."""
+    payload = [
+        {
+            "version": "v0.9",
+            "createSurface": {"surfaceId": "s", "catalogId": catalog_v09.catalog_id},
+        },
+        {
+            "version": "v0.9",
+            "updateComponents": {
+                "surfaceId": "s",
+                "components": [
+                    {"id": "root", "component": "Text", "text": "# Estado de cuenta"},
+                ],
+            },
+        },
+    ]
+
+    repaired = validate_tool_input(catalog_v09, payload, repair=True)
+
+    assert (
+        repaired[1]["updateComponents"]["components"][0]["text"] == "Estado de cuenta"
+    )
+    assert (
+        payload[1]["updateComponents"]["components"][0]["text"] == "# Estado de cuenta"
+    )
 
 
 class TestValidateConRepair:

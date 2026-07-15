@@ -32,6 +32,28 @@ _V09_MESSAGE_NAMES = {
     "deleteSurface": "DeleteSurfaceMessage",
 }
 
+_UI_PRESENTATION_RULES = """
+
+--- REGLAS DE PRESENTACION DE LA UI ---
+El contenido visible de una interfaz debe ser texto plano de producto.
+- No uses sintaxis Markdown: no # para titulos, no **negrita**, no listas con
+  marcadores, no enlaces Markdown, no backticks ni bloques de codigo.
+- Expresa la jerarquia con Text.variant (h1, h2, h3, body, caption) y con
+  componentes A2UI, no con caracteres de formato dentro de Text.text.
+- Usa Icon para simbolos. No escribas nombres de iconos como texto visible.
+- No anadas explicaciones conversacionales a una UI: entrega una superficie
+  clara, con etiquetas y acciones orientadas a la persona que la usara.
+- En formularios inicialmente vacios, no anadas checks de validacion que
+  fallen al cargar la interfaz. Solo usa checks cuando hay datos iniciales
+  validos o cuando el data model incluye un estado explicito de envio/tocado
+  que evita mostrar el error antes de que la persona interactue.
+- Declara Video solo con una URL HTTPS publica y directa a un archivo MP4 que
+  pueda reproducirse sin autenticacion ni DRM. No inventes una fuente de
+  video y no uses muestras de Google Storage/Google GTV, porque algunos
+  navegadores las bloquean. Si no puedes aportar una fuente directa fiable,
+  usa una composicion estatica en lugar de prometer un video reproducible.
+"""
+
 
 def _normalize_allowed_messages(
     version: str,
@@ -226,6 +248,7 @@ class ClaudeA2uiPromptBuilder:
             + ", ".join(functions)
             + "\n"
         )
+    prompt += _UI_PRESENTATION_RULES
     return prompt
 
   def get_catalog(

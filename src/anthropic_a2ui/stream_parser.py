@@ -243,6 +243,9 @@ class ClaudeStreamParser:
         )
       else:
         self._validator.validate(parsed)
+      from .tool import _ensure_created_surfaces_are_renderable
+
+      _ensure_created_surfaces_are_renderable(parsed)
     return [ResponsePart(a2ui_json=parsed)]
 
   def flush(self) -> list[ResponsePart]:

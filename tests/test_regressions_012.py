@@ -107,6 +107,29 @@ class TestRetryContract:
     assert tool_result["tool_use_id"] == "toolu_original"
     assert tool_result["is_error"] is True
 
+  def test_payload_policy_retries_with_host_feedback(self, sample_a2ui_json):
+    client = _Client([_tool_events(sample_a2ui_json), _tool_events(sample_a2ui_json)])
+    validations: list[list[dict[str, Any]]] = []
+
+    def reject_first_payload(payload: list[dict[str, Any]]) -> None:
+      validations.append(payload)
+      if len(validations) == 1:
+        raise ValueError("El origen de Video no pertenece a un dominio permitido")
+
+    result = generate_a2ui(
+        client,
+        "make a product UI",
+        max_retries=1,
+        payload_validator=reject_first_payload,
+    )
+
+    assert result.success is True
+    assert result.attempts == 2
+    assert len(validations) == 2
+    retry_result = client.messages.calls[1]["messages"][-1]["content"][0]
+    assert retry_result["is_error"] is True
+    assert "dominio permitido" in retry_result["content"]
+
   def test_transport_error_does_not_retry_as_model_feedback(self):
     class FailingMessages:
 
@@ -133,6 +156,10 @@ class TestRetryContract:
   def test_invalid_retry_count_fails_before_call(self, max_retries: Any):
     with pytest.raises((TypeError, ValueError)):
       generate_a2ui(object(), "make a form", max_retries=max_retries)
+
+  def test_non_callable_payload_policy_fails_before_call(self):
+    with pytest.raises(TypeError, match="payload_validator"):
+      generate_a2ui(object(), "make a form", payload_validator="invalid")
 
 
 class TestRepairContract:

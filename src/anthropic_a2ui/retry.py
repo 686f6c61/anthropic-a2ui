@@ -14,7 +14,7 @@ latencia, y reparacion automatica de payloads A2UI.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Optional, cast
+from typing import Any, Callable, Optional, cast
 
 import anthropic
 from anthropic.types import MessageParam, TextBlockParam, ToolParam
@@ -22,6 +22,8 @@ from anthropic.types import MessageParam, TextBlockParam, ToolParam
 from .prompt_builder import ClaudeA2uiPromptBuilder
 from .stream_parser import ClaudeStreamParser
 from .tool import create_a2ui_tool, validate_tool_input
+
+PayloadValidator = Callable[[list[dict[str, Any]]], None]
 
 
 @dataclass
@@ -97,6 +99,7 @@ def _run_attempt(
     messages: list[MessageParam],
     catalog: Any,
     log_repairs: bool,
+    payload_validator: Optional[PayloadValidator] = None,
 ) -> _AttemptResult:
   """Ejecuta un intento de generacion.
 
@@ -127,6 +130,8 @@ def _run_attempt(
       if a2ui_payload is not None:
         try:
           a2ui_payload = validate_tool_input(catalog, a2ui_payload, repair=True)
+          if payload_validator is not None:
+            payload_validator(a2ui_payload)
           return _AttemptResult(
               a2ui_json=a2ui_payload,
               text=text,
@@ -194,6 +199,7 @@ def generate_a2ui(
     ),
     use_cache: bool = True,
     log_repairs: bool = False,
+    payload_validator: Optional[PayloadValidator] = None,
 ) -> RetryResult:
   """Llama a Claude y devuelve A2UI valido, reintentando si falla.
 
@@ -211,6 +217,10 @@ def generate_a2ui(
     log_repairs: Si registrar que reparaciones se aplicaron. Por defecto
       ``False``. Si es ``True``, ``RetryResult.repairs`` contiene una lista
       de descripciones legibles.
+    payload_validator: Politica adicional del anfitrion que recibe el
+      payload A2UI ya validado. Debe lanzar una excepcion para rechazarlo;
+      el motivo se devuelve a Claude en el siguiente intento. Sirve para
+      imponer, por ejemplo, dominios de medios permitidos.
 
   Returns:
     ``RetryResult`` con el A2UI validado, texto y metadatos.
@@ -236,7 +246,11 @@ def generate_a2ui(
         print(f"Fallo: {result.error}")
     ```
   """
-  _validate_generation_options(max_tokens=max_tokens, max_retries=max_retries)
+  _validate_generation_options(
+      max_tokens=max_tokens,
+      max_retries=max_retries,
+      payload_validator=payload_validator,
+  )
   if builder is None:
     builder = ClaudeA2uiPromptBuilder(version="0.9")
 
@@ -261,7 +275,15 @@ def generate_a2ui(
   for attempt in range(1, max_retries + 2):
     result.attempts = attempt
     attempt_result = _run_attempt(
-        client, model, system_blocks, tool, max_tokens, messages, catalog, log_repairs
+        client,
+        model,
+        system_blocks,
+        tool,
+        max_tokens,
+        messages,
+        catalog,
+        log_repairs,
+        payload_validator,
     )
     if attempt_result.text:
       all_text_parts.append(attempt_result.text)
@@ -308,6 +330,7 @@ async def generate_a2ui_async(
     ),
     use_cache: bool = True,
     log_repairs: bool = False,
+    payload_validator: Optional[PayloadValidator] = None,
 ) -> RetryResult:
   """Version async de ``generate_a2ui``.
 
@@ -327,7 +350,11 @@ async def generate_a2ui_async(
     )
     ```
   """
-  _validate_generation_options(max_tokens=max_tokens, max_retries=max_retries)
+  _validate_generation_options(
+      max_tokens=max_tokens,
+      max_retries=max_retries,
+      payload_validator=payload_validator,
+  )
   if builder is None:
     builder = ClaudeA2uiPromptBuilder(version="0.9")
 
@@ -352,7 +379,15 @@ async def generate_a2ui_async(
   for attempt in range(1, max_retries + 2):
     result.attempts = attempt
     attempt_result = await _run_attempt_async(
-        client, model, system_blocks, tool, max_tokens, messages, catalog, log_repairs
+        client,
+        model,
+        system_blocks,
+        tool,
+        max_tokens,
+        messages,
+        catalog,
+        log_repairs,
+        payload_validator,
     )
     if attempt_result.text:
       all_text_parts.append(attempt_result.text)
@@ -390,6 +425,7 @@ async def _run_attempt_async(
     messages: list[MessageParam],
     catalog: Any,
     log_repairs: bool,
+    payload_validator: Optional[PayloadValidator] = None,
 ) -> _AttemptResult:
   """Version async de ``_run_attempt``."""
   parser = ClaudeStreamParser(catalog=catalog, strict_tool_validation=True, repair=True)
@@ -416,6 +452,8 @@ async def _run_attempt_async(
       if a2ui_payload is not None:
         try:
           a2ui_payload = validate_tool_input(catalog, a2ui_payload, repair=True)
+          if payload_validator is not None:
+            payload_validator(a2ui_payload)
           return _AttemptResult(
               a2ui_json=a2ui_payload,
               text=text,
@@ -536,14 +574,20 @@ class A2uiConversation:
       ),
       use_cache: bool = True,
       log_repairs: bool = False,
+      payload_validator: Optional[PayloadValidator] = None,
   ) -> None:
-    _validate_generation_options(max_tokens=max_tokens, max_retries=max_retries)
+    _validate_generation_options(
+        max_tokens=max_tokens,
+        max_retries=max_retries,
+        payload_validator=payload_validator,
+    )
     self.client = client
     self.model = model
     self.max_tokens = max_tokens
     self.max_retries = max_retries
     self.use_cache = use_cache
     self.log_repairs = log_repairs
+    self.payload_validator = payload_validator
 
     if builder is None:
       builder = ClaudeA2uiPromptBuilder(version="0.9")
@@ -590,6 +634,7 @@ class A2uiConversation:
           self.messages,
           self.catalog,
           self.log_repairs,
+          self.payload_validator,
       )
       if attempt_result.text:
         text_parts.append(attempt_result.text)
@@ -697,14 +742,20 @@ class A2uiConversationAsync:
       ),
       use_cache: bool = True,
       log_repairs: bool = False,
+      payload_validator: Optional[PayloadValidator] = None,
   ) -> None:
-    _validate_generation_options(max_tokens=max_tokens, max_retries=max_retries)
+    _validate_generation_options(
+        max_tokens=max_tokens,
+        max_retries=max_retries,
+        payload_validator=payload_validator,
+    )
     self.client = client
     self.model = model
     self.max_tokens = max_tokens
     self.max_retries = max_retries
     self.use_cache = use_cache
     self.log_repairs = log_repairs
+    self.payload_validator = payload_validator
 
     if builder is None:
       builder = ClaudeA2uiPromptBuilder(version="0.9")
@@ -744,6 +795,7 @@ class A2uiConversationAsync:
           self.messages,
           self.catalog,
           self.log_repairs,
+          self.payload_validator,
       )
       if attempt_result.text:
         text_parts.append(attempt_result.text)
@@ -981,7 +1033,12 @@ def parse_json_response(
   return validate_tool_input(catalog, payload, repair=True)
 
 
-def _validate_generation_options(*, max_tokens: int, max_retries: int) -> None:
+def _validate_generation_options(
+    *,
+    max_tokens: int,
+    max_retries: int,
+    payload_validator: Optional[PayloadValidator] = None,
+) -> None:
   """Rechaza parametros que no pueden producir una llamada valida."""
   if isinstance(max_tokens, bool) or not isinstance(max_tokens, int):
     raise TypeError("max_tokens debe ser un entero")
@@ -991,6 +1048,8 @@ def _validate_generation_options(*, max_tokens: int, max_retries: int) -> None:
     raise TypeError("max_retries debe ser un entero")
   if max_retries < 0:
     raise ValueError("max_retries no puede ser negativo")
+  if payload_validator is not None and not callable(payload_validator):
+    raise TypeError("payload_validator debe ser callable o None")
 
 
 def _assistant_text_message(text: str) -> MessageParam:

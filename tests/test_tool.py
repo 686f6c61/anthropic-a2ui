@@ -93,6 +93,22 @@ class TestValidateToolInput:
     with pytest.raises(ValueError, match="al menos un mensaje"):
       validate_tool_input(catalog_v09, [])
 
+  def test_create_surface_sin_root_no_es_renderizable(self, catalog_v09):
+    payload = [
+        {
+            "version": "v0.9",
+            "createSurface": {
+                "surfaceId": "incompleta",
+                "catalogId": catalog_v09.catalog_id,
+            },
+        },
+    ]
+
+    with pytest.raises(ValueError, match="renderizable"):
+      validate_tool_input(catalog_v09, payload)
+
+    validate_tool_input(catalog_v09, payload, strict_integrity=False)
+
   def test_strict_integrity_false_es_mas_laxo(self, catalog_v09, sample_a2ui_json):
     # Con strict_integrity=False, se salta comprobaciones de topología
     try:

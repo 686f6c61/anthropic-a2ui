@@ -23,7 +23,11 @@ falen la validacion o que los modelos generen JSON invalido:
    ``repair_functions`` elimina los ``FunctionCall`` con funciones
    invalidas y los sustituye por un valor literal.
 
-Ambas reparaciones son transparentes: el payload sigue siendo A2UI valido
+5. **Markdown en texto visible**: los modelos pueden usar marcadores
+   Markdown que un renderer A2UI no interpreta. ``repair_markdown_text``
+   conserva el contenido legible y elimina los marcadores de presentacion.
+
+Las reparaciones son transparentes: el payload sigue siendo A2UI valido
 y renderizable. Se aplican en ``validate_tool_input`` cuando se pasa
 ``repair=True`` (por defecto).
 """
@@ -31,6 +35,7 @@ y renderizable. Se aplican en ``validate_tool_input`` cuando se pasa
 from __future__ import annotations
 
 import copy
+import re
 from typing import Any, Optional
 
 
@@ -719,6 +724,116 @@ def repair_childlists(
   return patched
 
 
+# --- Markdown en texto visible ------------------------------------
+
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^\)]+\)")
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^\)]+\)")
+_MARKDOWN_HEADING_RE = re.compile(r"(?m)^(\s{0,3})#{1,6}\s+")
+_MARKDOWN_QUOTE_RE = re.compile(r"(?m)^(\s{0,3})>\s?")
+_MARKDOWN_LIST_RE = re.compile(r"(?m)^(\s{0,3})(?:[-+*]|\d+[.)])\s+")
+_MARKDOWN_EMPHASIS_RE = re.compile(
+    r"(?<!\w)(?:\*\*|__|\*|_)(.+?)(?:\*\*|__|\*|_)(?!\w)"
+)
+_MARKDOWN_CODE_RE = re.compile(r"`([^`]+)`")
+
+
+def _strip_markdown(text: str) -> str:
+  """Elimina marcadores Markdown habituales conservando el texto visible."""
+  plain = _MARKDOWN_IMAGE_RE.sub(r"\1", text)
+  plain = _MARKDOWN_LINK_RE.sub(r"\1", plain)
+  plain = plain.replace("```", "")
+  plain = _MARKDOWN_CODE_RE.sub(r"\1", plain)
+  plain = _MARKDOWN_HEADING_RE.sub(r"\1", plain)
+  plain = _MARKDOWN_QUOTE_RE.sub(r"\1", plain)
+  plain = _MARKDOWN_LIST_RE.sub(r"\1", plain)
+  return _MARKDOWN_EMPHASIS_RE.sub(r"\1", plain)
+
+
+def _repair_visible_text(
+    value: Any,
+    *,
+    location: str,
+    repair_log: Optional[list[str]],
+) -> Any:
+  """Limpia Markdown unicamente de literales destinados al renderer."""
+  if not isinstance(value, str):
+    return value
+  plain = _strip_markdown(value)
+  if plain != value and repair_log is not None:
+    repair_log.append(f"{location}: Markdown eliminado del texto visible")
+  return plain
+
+
+def repair_markdown_text(
+    payload: list[dict[str, Any]],
+    *,
+    repair_log: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
+  """Elimina Markdown de los campos visibles de componentes A2UI.
+
+  Solo trata etiquetas, textos, titulos de pestanas, opciones y mensajes de
+  validacion. Los valores de datos, URLs, rutas y FunctionCalls se conservan
+  sin cambios.
+  """
+  patched = copy.deepcopy(payload)
+  for message in patched:
+    update = message.get("updateComponents")
+    if not isinstance(update, dict):
+      continue
+    components = update.get("components", [])
+    if not isinstance(components, list):
+      continue
+    for component in components:
+      if not isinstance(component, dict):
+        continue
+      component_id = component.get("id", "?")
+      location = f"Componente '{component_id}'"
+      for field in ("text", "label", "description"):
+        if field in component:
+          component[field] = _repair_visible_text(
+              component[field],
+              location=f"{location}.{field}",
+              repair_log=repair_log,
+          )
+      accessibility = component.get("accessibility")
+      if isinstance(accessibility, dict):
+        for field in ("label", "description"):
+          if field in accessibility:
+            accessibility[field] = _repair_visible_text(
+                accessibility[field],
+                location=f"{location}.accessibility.{field}",
+                repair_log=repair_log,
+            )
+      options = component.get("options")
+      if isinstance(options, list):
+        for option in options:
+          if isinstance(option, dict) and "label" in option:
+            option["label"] = _repair_visible_text(
+                option["label"],
+                location=f"{location}.options.label",
+                repair_log=repair_log,
+            )
+      tabs = component.get("tabs")
+      if isinstance(tabs, list):
+        for tab in tabs:
+          if isinstance(tab, dict) and "title" in tab:
+            tab["title"] = _repair_visible_text(
+                tab["title"],
+                location=f"{location}.tabs.title",
+                repair_log=repair_log,
+            )
+      checks = component.get("checks")
+      if isinstance(checks, list):
+        for check in checks:
+          if isinstance(check, dict) and "message" in check:
+            check["message"] = _repair_visible_text(
+                check["message"],
+                location=f"{location}.checks.message",
+                repair_log=repair_log,
+            )
+  return patched
+
+
 def _catalog_valid_icons(catalog: Any) -> set[str]:
   """Extrae los iconos validos del catalogo activo."""
   icon_schema = catalog.catalog_schema.get("components", {}).get("Icon")
@@ -795,6 +910,7 @@ def repair_payload(
       valid_functions=valid_functions,
       repair_log=repair_log,
   )
+  repaired = repair_markdown_text(repaired, repair_log=repair_log)
   if repair_log is not None and _uses_datetime_bounds(repaired):
     repair_log.append("DateTimeInput: schema min/max corregido de oneOf a anyOf")
   return repaired

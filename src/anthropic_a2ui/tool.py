@@ -154,9 +154,9 @@ def validate_tool_input(
     catalog: ``A2uiCatalog`` con su validador.
     input_json: La lista que Claude devolvio como ``a2ui_json``.
     strict_integrity: Si aplicar comprobaciones de integridad (IDs unicos,
-      root alcanzable, sin ciclos).
+      root alcanzable, sin ciclos y superficies creadas renderizables).
     repair: Si reparar problemas conocidos antes de validar. Por defecto
-      ``True``. Aplica cuatro reparaciones:
+      ``True``. Aplica seis reparaciones:
 
       1. **``DateTimeInput.min/max``**: parchea el schema del catalogo
          cambiando ``oneOf`` por ``anyOf`` (bug del schema de A2UI).
@@ -166,6 +166,10 @@ def validate_tool_input(
          modelo a iconos validos del catalogo.
       4. **Funciones inexistentes**: sustituye ``FunctionCall`` con
          funciones que no existen en el catalogo por valores literales.
+      5. **Child lists dinamicos**: convierte los hijos dinamicos no
+         permitidos por ``Row``/``Column`` en listas estaticas.
+      6. **Markdown visible**: elimina marcadores de formato de los campos
+         que el renderer presenta como texto.
 
       Si ``repair=False``, valida contra el schema original sin
       reparaciones (mas estricto).
@@ -198,7 +202,48 @@ def validate_tool_input(
     )
   else:
     catalog.validator.validate(payload, strict_integrity=strict_integrity)
+  if strict_integrity:
+    _ensure_created_surfaces_are_renderable(payload)
   return payload
+
+
+def _ensure_created_surfaces_are_renderable(payload: list[dict[str, Any]]) -> None:
+  """Exige un ``root`` para cada superficie v0.9 creada en el payload.
+
+  El validador del protocolo permite un ``createSurface`` aislado porque una
+  aplicacion puede completar la superficie en mensajes incrementales futuros.
+  Para una respuesta completa de Claude, sin embargo, esa superficie es
+  invisible y no cumple el contrato de entregar una UI al usuario.
+  """
+  created_surfaces: set[str] = set()
+  rendered_surfaces: set[str] = set()
+
+  for message in payload:
+    create_surface = message.get("createSurface")
+    if isinstance(create_surface, dict):
+      surface_id = create_surface.get("surfaceId")
+      if isinstance(surface_id, str):
+        created_surfaces.add(surface_id)
+
+    update_components = message.get("updateComponents")
+    if not isinstance(update_components, dict):
+      continue
+    surface_id = update_components.get("surfaceId")
+    components = update_components.get("components")
+    if isinstance(surface_id, str) and isinstance(components, list):
+      if any(
+          isinstance(component, dict) and component.get("id") == "root"
+          for component in components
+      ):
+        rendered_surfaces.add(surface_id)
+
+  incomplete = sorted(created_surfaces - rendered_surfaces)
+  if incomplete:
+    ids = ", ".join(repr(surface_id) for surface_id in incomplete)
+    raise ValueError(
+        "Cada createSurface debe incluir un updateComponents con el componente "
+        f"root para ser renderizable. Superficies incompletas: {ids}"
+    )
 
 
 def _validate_with_patched_schema(

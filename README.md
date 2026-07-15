@@ -49,10 +49,11 @@ behind the scenes:
    `ResponsePart` objects containing either conversational text or a
    complete A2UI payload.
 
-4. **Automatic repair**: Before validation, the payload passes through five
+4. **Automatic repair**: Before validation, the payload passes through six
    repair functions that fix known issues silently — invalid icon names,
    non-existent catalog functions, orphaned components, ambiguous
-   DateTimeInput formats, and dynamic child lists in Row/Column.
+   DateTimeInput formats, dynamic child lists in Row/Column, and Markdown
+   markers in visible UI text.
 
 5. **Validation**: The repaired payload is checked against the A2UI schema
    and its topology. If a tool call fails that validation, the error is fed
@@ -175,6 +176,44 @@ Key parameters:
 - `use_cache`: enable prompt caching to reduce cost ~80% on repeated calls
   (default `True`).
 - `log_repairs`: record what was repaired for debugging (default `False`).
+- `payload_validator`: host-side policy called after A2UI validation. Raise an
+  exception to reject the payload and give Claude the reason on the next retry.
+
+### Content and media policy
+
+Schema-valid A2UI can still contain an external image, video, or link that
+does not meet the host application's trust policy. Use `payload_validator` to
+make that policy part of generation rather than silently rewriting model
+content. The callback receives the repaired, schema-valid payload; raising an
+exception makes the current attempt fail and sends the reason to Claude for a
+correction.
+
+```python
+from urllib.parse import urlparse
+
+from anthropic_a2ui import generate_a2ui
+
+
+def require_trusted_media(payload):
+    for message in payload:
+        for component in message.get("updateComponents", {}).get("components", []):
+            if component.get("component") not in {"Image", "Video"}:
+                continue
+            host = urlparse(component.get("url", "")).hostname
+            if host not in {"media.example.com", "images.example.com"}:
+                raise ValueError("Media URL must use an approved application domain")
+
+
+result = generate_a2ui(
+    client,
+    "make me a product page with a video",
+    payload_validator=require_trusted_media,
+)
+```
+
+Use a media proxy or an asset service controlled by the application in
+production. The library never downloads or rewrites arbitrary third-party
+URLs on the user's behalf.
 
 ### Mode 2: Multi-turn conversation with `A2uiConversation`
 
@@ -323,7 +362,7 @@ Claude embeds the JSON directly in its text response between
 ## Automatic repairs
 
 Claude is remarkably good at generating valid A2UI, but it occasionally
-makes mistakes — especially the smaller models. The package includes five
+makes mistakes — especially the smaller models. The package includes six
 repair functions that fix these issues transparently before validation, so
 the caller never sees a false rejection:
 
@@ -334,6 +373,7 @@ the caller never sees a false rejection:
 | `repair_icons` | Icon names that don't exist in the active catalog enum (`cloud`, `sunny`, `trash`, ...) | Maps known aliases to a valid catalog icon; otherwise uses `info` when available |
 | `repair_functions` | `FunctionCall` with functions that don't exist in the active catalog (`ternary`, `if`, `switch`) | Replaces with a contextual literal or removes an invalid check without altering valid custom functions |
 | `repair_childlists` | Dynamic child lists (`{componentId, path}`) used in `Row` or `Column`, which only accept static string arrays | Converts to a static array of component IDs |
+| `repair_markdown_text` | Markdown markers in labels, text, tabs, options, accessibility content, and validation messages | Preserves the visible content without relying on a Markdown renderer |
 
 All repairs are enabled by default in `generate_a2ui`, `A2uiConversation`,
 and `ClaudeStreamParser`. They can be disabled with `repair=False` for
@@ -411,10 +451,11 @@ prompt = builder.build(
 
 ## Model verification
 
-The automated suite uses local stream doubles. Release 0.1.3 also verifies
-tool use, two-turn conversation state, and structured-output parsing against
-`claude-haiku-4-5-20251001`. Model names and capabilities evolve, so run a
-credentialed smoke test with the exact model and catalog before production use.
+The automated suite uses local stream doubles. Release 0.1.4 also verifies
+tool use, two-turn conversation state, structured-output parsing, and 30
+natural UI requests against Haiku 4.5, Opus 4.7, and Opus 4.8. Model names and
+capabilities evolve, so run a credentialed smoke test with the exact model and
+catalog before production use.
 
 ---
 
@@ -458,6 +499,8 @@ credentialed smoke test with the exact model and catalog before production use.
 - **`repair_functions(payload)`**: fixes non-existent function calls.
 - **`repair_childlists(payload)`**: fixes dynamic child lists in
   Row/Column.
+- **`repair_markdown_text(payload)`**: removes Markdown markers from
+  visible UI text while preserving data values, URLs, paths, and functions.
 - **`repair_payload(payload, catalog=...)`**: applies the full repair chain
   using the active catalog's icons and functions.
 - **`patch_catalog_schema(schema)`**: patches the DateTimeInput schema.
