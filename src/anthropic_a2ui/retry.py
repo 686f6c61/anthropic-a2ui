@@ -825,16 +825,23 @@ def create_a2ui_response_format(
   """Crea el formato JSON para ``output_config.format`` de Anthropic.
 
   Anthropic soporta structured outputs con ``output_config.format`` y
-  ``type: "json_schema"`` para garantizar que la respuesta sea JSON
-  parseable sin necesidad de tools ni tags. Este modo es util cuando se
-  quiere UI pura sin texto conversacional.
+  ``type: "json_schema"`` para garantizar un sobre JSON parseable sin
+  necesidad de tools ni tags. Este modo es util cuando se quiere UI pura
+  sin texto conversacional.
 
-  El esquema se envuelve igual que en ``create_a2ui_tool`` (en
-  ``{"a2ui_json": [...]}``) para evitar ``oneOf`` en la raiz.
+  El schema completo de A2UI contiene ``oneOf``, que Anthropic no admite en
+  JSON outputs. Por eso el sobre fuerza ``a2ui_json`` como una cadena que
+  contiene el array A2UI serializado. ``parse_json_response`` lo deserializa
+  y aplica despues la validacion estricta del catalogo activo. Si se usan
+  restricciones, pasarlas tambien a ``parse_json_response`` para imponerlas
+  localmente.
 
   Args:
-    catalog: ``A2uiCatalog``.
-    allowed_components: Subconjunto de componentes para podar.
+    catalog: ``A2uiCatalog`` que se usara al validar la respuesta.
+    allowed_components: Subconjunto de componentes indicado al modelo. Para
+      imponerlo, repetirlo al llamar a ``parse_json_response``.
+    allowed_messages: Subconjunto de tipos de mensaje indicado al modelo. Para
+      imponerlo, repetirlo al llamar a ``parse_json_response``.
 
   Returns:
     Dict listo para pasarlo como ``output_config={"format": ...}``:
@@ -849,20 +856,37 @@ def create_a2ui_response_format(
         output_config={"format": output_format},
         messages=[{"role": "user", "content": "hazme un formulario"}],
     )
-    # response.content[0].text es un JSON string con {"a2ui_json": [...]}
+    # response.content[0].text contiene
+    # {"a2ui_json": "[{... mensajes A2UI serializados ...}]"}
     ```
   """
-  from .tool import create_a2ui_tool
+  from .prompt_builder import _prune_catalog
 
-  # Reutilizar la envoltura de create_a2ui_tool
-  tool = create_a2ui_tool(
+  pruned_catalog = _prune_catalog(
       catalog,
       allowed_components=allowed_components,
       allowed_messages=allowed_messages,
   )
+  component_names = sorted(pruned_catalog.catalog_schema.get("components", {}))
+  description = (
+      "A JSON-serialized array of complete A2UI messages. "
+      "Do not use Markdown or code fences."
+  )
+  if allowed_components is not None:
+    description += " Allowed components: " + ", ".join(component_names) + "."
   return {
       "type": "json_schema",
-      "schema": tool["input_schema"],
+      "schema": {
+          "type": "object",
+          "properties": {
+              "a2ui_json": {
+                  "type": "string",
+                  "description": description,
+              },
+          },
+          "required": ["a2ui_json"],
+          "additionalProperties": False,
+      },
   }
 
 
@@ -882,17 +906,29 @@ def create_a2ui_output_config(
   }
 
 
-def parse_json_response(message: Any, catalog: Any) -> list[dict[str, Any]]:
+def parse_json_response(
+    message: Any,
+    catalog: Any,
+    *,
+    allowed_components: Optional[list[str]] = None,
+    allowed_messages: Optional[list[str]] = None,
+) -> list[dict[str, Any]]:
   """Extrae y valida el A2UI de una respuesta con structured output.
 
   Cuando se usa ``output_config.format``, la respuesta de Claude viene como
-  un ``TextBlock`` cuyo ``text`` es un JSON string con
-  ``{"a2ui_json": [...]}``. Esta funcion lo extrae, desenvuelve, repara y
-  valida.
+  un ``TextBlock`` cuyo ``text`` es un JSON string con ``a2ui_json`` como
+  array (formato heredado) o como una cadena que serializa el array (formato
+  compatible con structured outputs de Anthropic). Esta funcion lo extrae,
+  desenvuelve, repara y valida.
 
   Args:
     message: El mensaje de respuesta de ``client.messages.create``.
     catalog: ``A2uiCatalog`` para validacion.
+    allowed_components: Subconjunto de componentes que se permite renderizar.
+      Debe coincidir con el usado en ``create_a2ui_output_config``.
+    allowed_messages: Subconjunto de tipos de mensaje que se permite
+      renderizar. Debe coincidir con el usado en
+      ``create_a2ui_output_config``.
 
   Returns:
     Lista de mensajes A2UI validados y reparados.
@@ -901,6 +937,14 @@ def parse_json_response(message: Any, catalog: Any) -> list[dict[str, Any]]:
     ValueError: Si el JSON no es valido o no contiene ``a2ui_json``.
   """
   import json
+
+  from .prompt_builder import _prune_catalog
+
+  catalog = _prune_catalog(
+      catalog,
+      allowed_components=allowed_components,
+      allowed_messages=allowed_messages,
+  )
 
   # Extraer el texto del primer content block
   text = ""
@@ -927,6 +971,12 @@ def parse_json_response(message: Any, catalog: Any) -> list[dict[str, Any]]:
     payload = parsed
   else:
     raise ValueError("La respuesta no contiene a2ui_json")
+
+  if isinstance(payload, str):
+    try:
+      payload = json.loads(payload)
+    except json.JSONDecodeError as exc:
+      raise ValueError(f"a2ui_json serializado no es JSON valido: {exc}") from exc
 
   return validate_tool_input(catalog, payload, repair=True)
 

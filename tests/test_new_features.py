@@ -161,7 +161,9 @@ class TestCreateA2uiResponseFormat:
     schema = rf["schema"]
     assert schema["type"] == "object"
     assert "a2ui_json" in schema["properties"]
-    assert schema["properties"]["a2ui_json"]["type"] == "array"
+    assert schema["properties"]["a2ui_json"]["type"] == "string"
+    assert schema["additionalProperties"] is False
+    assert "oneOf" not in str(schema)
 
   def test_con_poda(self, catalog_v09):
     rf = create_a2ui_response_format(catalog_v09, allowed_components=["Text"])
@@ -209,6 +211,85 @@ class TestParseJsonResponse:
     result = parse_json_response(msg, catalog_v09)
     assert len(result) == 2
     assert result[1]["updateComponents"]["components"][0]["text"] == "Hola"
+
+  def test_extrae_array_serializado_por_structured_output(self, catalog_v09):
+    import json
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeTextBlock:
+      text: str
+
+    @dataclass
+    class FakeMessage:
+      content: list
+
+    payload = [
+        {
+            "version": "v0.9",
+            "createSurface": {"surfaceId": "s", "catalogId": catalog_v09.catalog_id},
+        },
+        {
+            "version": "v0.9",
+            "updateComponents": {
+                "surfaceId": "s",
+                "components": [{"id": "root", "component": "Text", "text": "Hola"}],
+            },
+        },
+    ]
+    message = FakeMessage(
+        content=[FakeTextBlock(text=json.dumps({"a2ui_json": json.dumps(payload)}))]
+    )
+
+    assert parse_json_response(message, catalog_v09) == payload
+
+  def test_aplica_restricciones_a_la_validacion_final(self, catalog_v09):
+    import json
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeTextBlock:
+      text: str
+
+    @dataclass
+    class FakeMessage:
+      content: list
+
+    payload = [
+        {
+            "version": "v0.9",
+            "createSurface": {"surfaceId": "s", "catalogId": catalog_v09.catalog_id},
+        },
+        {
+            "version": "v0.9",
+            "updateComponents": {
+                "surfaceId": "s",
+                "components": [
+                    {
+                        "id": "root",
+                        "component": "Button",
+                        "child": "button-label",
+                        "action": {"event": {"name": "submit"}},
+                    },
+                    {
+                        "id": "button-label",
+                        "component": "Text",
+                        "text": "Enviar",
+                    },
+                ],
+            },
+        },
+    ]
+    message = FakeMessage(
+        content=[FakeTextBlock(text=json.dumps({"a2ui_json": json.dumps(payload)}))]
+    )
+
+    with pytest.raises(Exception):
+      parse_json_response(
+          message,
+          catalog_v09,
+          allowed_components=["Text"],
+      )
 
   def test_devuelve_payload_reparado(self, catalog_v09):
     import json
@@ -285,6 +366,22 @@ class TestParseJsonResponse:
 
     msg = FakeMessage(content=[FakeTextBlock(text=json.dumps({"otra_cosa": 1}))])
     with pytest.raises(ValueError, match="no contiene a2ui_json"):
+      parse_json_response(msg, catalog_v09)
+
+  def test_lanza_si_a2ui_json_serializado_no_es_json(self, catalog_v09):
+    import json
+    from dataclasses import dataclass
+
+    @dataclass
+    class FakeTextBlock:
+      text: str
+
+    @dataclass
+    class FakeMessage:
+      content: list
+
+    msg = FakeMessage(content=[FakeTextBlock(text=json.dumps({"a2ui_json": "{"}))])
+    with pytest.raises(ValueError, match="serializado no es JSON"):
       parse_json_response(msg, catalog_v09)
 
 

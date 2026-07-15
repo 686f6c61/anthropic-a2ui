@@ -4,6 +4,23 @@ All notable changes to `anthropic-a2ui` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and the versioning follows [SemVer](https://semver.org/).
 
+## [0.1.3] - 2026-07-15
+
+### Fixed
+
+- Replaced the structured-output schema that Anthropic rejected because it
+  contained A2UI's unsupported `oneOf` branches. The provider now receives a
+  strict JSON envelope with a serialized A2UI array, which
+  `parse_json_response` deserializes and validates locally.
+- Made structured-output component and message restrictions enforceable during
+  the final local validation by passing the same limits to
+  `parse_json_response`.
+
+### Changed
+
+- Verified live tool use, two-turn conversation history, and structured output
+  with `claude-haiku-4-5-20251001`.
+
 ## [0.1.2] - 2026-07-14
 
 ### Fixed

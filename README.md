@@ -229,10 +229,10 @@ r2 = await conv.send("add an email field")
 
 Best when you want pure UI output with no conversational text. This mode
 uses Anthropic's `output_config.format` structured output parameter with
-`json_schema` to request parseable JSON. No tools and no tags: just a
-structured payload. Validate this mode against the target model and API before
-production use; provider schema-complexity limits can reject a full A2UI
-schema.
+`json_schema` to request a parseable JSON envelope. No tools and no tags: just
+a structured payload. Anthropic JSON outputs do not accept A2UI's `oneOf`
+schema, so the envelope contains `a2ui_json` as a JSON-serialized string;
+`parse_json_response` deserializes it and applies strict local A2UI validation.
 
 ```python
 import anthropic
@@ -243,21 +243,40 @@ from anthropic_a2ui import (
 )
 
 builder = ClaudeA2uiPromptBuilder()
-output_config = create_a2ui_output_config(builder.get_catalog())
+allowed_components = ["Text", "TextField", "Button", "Column"]
+catalog = builder.get_catalog(allowed_components=allowed_components)
+output_config = create_a2ui_output_config(
+    catalog,
+    allowed_components=allowed_components,
+)
 
 client = anthropic.Anthropic()
 response = client.messages.create(
     model="claude-sonnet-4-6",
-    system=builder.build(role_description="You create user interfaces."),
+    system=builder.build(
+        role_description=(
+            "You create user interfaces. Serialize the complete A2UI message "
+            "array as JSON inside a2ui_json."
+        ),
+        allowed_components=allowed_components,
+    ),
     output_config=output_config,
     max_tokens=8192,
     messages=[{"role": "user", "content": "make me a form"}],
 )
 
 # Extract, unwrap, validate, and repair the A2UI payload
-a2ui_json = parse_json_response(response, builder.get_catalog())
+a2ui_json = parse_json_response(
+    response,
+    catalog,
+    allowed_components=allowed_components,
+)
 render(a2ui_json)
 ```
+
+With `allowed_components` or `allowed_messages`, pass the same restrictions
+to `parse_json_response`. Anthropic's schema constrains the outer envelope;
+the package enforces the A2UI subset during its local validation step.
 
 ### Mode 4: Manual streaming
 
@@ -392,10 +411,10 @@ prompt = builder.build(
 
 ## Model verification
 
-The automated suite uses local stream doubles and does not make live Claude
-requests. Model names, structured-output capabilities, and provider schema
-limits evolve, so run a credentialed smoke test with the exact model and
-catalog before relying on a release in production.
+The automated suite uses local stream doubles. Release 0.1.3 also verifies
+tool use, two-turn conversation state, and structured-output parsing against
+`claude-haiku-4-5-20251001`. Model names and capabilities evolve, so run a
+credentialed smoke test with the exact model and catalog before production use.
 
 ---
 
